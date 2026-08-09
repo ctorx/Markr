@@ -28,12 +28,20 @@ struct Theme {
     COLORREF buttonBorder = RGB(190, 190, 190);
     COLORREF buttonText = RGB(31, 35, 40);
 
-    // Menu bar, only custom drawn in dark mode.
+    // Menu strip and caption, both drawn by WindowChrome.
     COLORREF menuBackground = RGB(243, 243, 243);
     COLORREF menuText = RGB(31, 35, 40);
     COLORREF menuHot = RGB(224, 224, 224);
 
-    COLORREF roles[32] = {0};
+    COLORREF captionBackground = RGB(250, 250, 250);
+    COLORREF captionInactive = RGB(243, 243, 243);
+    COLORREF captionText = RGB(26, 26, 26);
+    COLORREF captionTextInactive = RGB(120, 120, 120);
+    COLORREF captionButtonHot = RGB(232, 232, 232);
+    COLORREF captionButtonPressed = RGB(218, 218, 218);
+
+    // Indexed by view::ColorRole; sized with room for new roles.
+    COLORREF roles[40] = {0};
 
     COLORREF role(view::ColorRole r) const { return roles[static_cast<int>(r)]; }
 };

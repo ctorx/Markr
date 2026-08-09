@@ -40,12 +40,14 @@ if ($outputDir -and -not (Test-Path $outputDir)) {
 $sources = @(
     'src\main.cpp',
     'src\win_viewer.cpp',
+    'src\win_chrome.cpp',
     'src\win_outline.cpp',
     'src\win_settings.cpp',
     'src\win_theme.cpp',
     'src\win_text.cpp',
     'src\layout.cpp',
     'src\search.cpp',
+    'src\highlight.cpp',
     'src\md_parser.cpp'
 ) | ForEach-Object { Join-Path $root $_ }
 

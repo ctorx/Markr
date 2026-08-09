@@ -10,15 +10,25 @@ It renders Markdown; it never shows the source and never lets you edit it.
 
 - **Full Markdown rendering** — CommonMark plus the GitHub extensions
   (see the table below)
-- **Follows the system theme** — light and dark, switching live when Windows does
+- **Syntax highlighting** in fenced code blocks, for the languages listed below
+- **Drop a file on the window** to open it
+- **Reloads on change** — edit in another editor and the view follows, keeping
+  your scroll position (`F5` forces it)
+- **Working links** — in-document `#anchors`, links to other Markdown files, and
+  `Alt+Left` / the mouse back button to retrace
+- **Zoom** — `Ctrl`+scroll or `Ctrl`+`+`/`-`, remembered between runs
+- **Follows the system theme** — light and dark, switching live when Windows does,
+  title bar and menu strip included
+- **Resize grip** in the bottom-right corner, and the usual drag borders
 - **Reflows on resize** — narrowing the window rewraps the text; there is never a
   horizontal scrollbar, not even for long code lines or wide tables
 - **Document outline** — a collapsible side panel listing the headings in their
   hierarchy; click one to jump, and the current section stays highlighted
 - **Remembers where you left it** — window position, size, maximised state and
   the outline panel's state are restored on the next run
-- **Notepad-style search** — a search bar under the menu with find next/previous
-  and wrap-around
+- **Notepad-style search** — hidden until you want it: `Ctrl+F` or the magnifier
+  at the right of the menu bar drops the bar down, with find next/previous and
+  wrap-around
 - **Select and copy** — mouse selection of the *rendered* text; `Edit → Copy` is
   enabled only when something is selected
 - **Clickable links** — opens in the default browser
@@ -41,6 +51,29 @@ It renders Markdown; it never shows the source and never lets you edit it.
 | Footnotes | `[^id]` references and definitions, numbered in reference order |
 | Raw HTML | block elements render their text; `<b> <i> <u> <s> <mark> <sub> <sup> <code> <br>` are honoured inline, other tags stripped |
 | Misc | backslash escapes, HTML entities, YAML front matter, thematic breaks |
+
+### Syntax highlighting
+
+Fenced blocks are highlighted when the info string names a supported language.
+Anything else renders as plain code.
+
+| Family | Fence tags |
+| --- | --- |
+| Markup | `html` `htm` `xhtml` `xml` `svg` `xaml` `axml` `axaml` `plist` `csproj` `config` `aspx` `ascx` `asax` `jsp` `vue` `svelte` `xsl` `xslt` `rss` `wsdl` |
+| Razor / ASP.NET | `cshtml` `razor` `vbhtml` — markup with C# transitions, `@{ }` blocks, `@code`, directives and `@* comments *@` |
+| CSS | `css` `scss` `sass` `less` |
+| JavaScript | `js` `javascript` `jsx` `mjs` `cjs` `ts` `tsx` `typescript` `json` |
+| C# | `cs` `c#` `csharp` `dotnet` |
+| Java | `java` `android` |
+| Swift | `swift` `ios` |
+| Python | `py` `python` `python3` |
+| SQL | `sql` (neutral), `tsql` `t-sql` `mssql` `sqlserver`, `pgsql` `postgres` `postgresql` `plpgsql` |
+
+Dialect details are handled: C# verbatim/interpolated strings and `#directives`,
+JavaScript template literals, Python decorators and triple-quoted/f-strings,
+Java and Swift annotations, T-SQL `@variables` and `[bracketed]` identifiers,
+PostgreSQL `$$ dollar quoting $$` and `::casts`, and HTML with embedded
+`<script>` and `<style>` bodies lexed as JavaScript and CSS.
 
 ## Building
 
@@ -72,20 +105,25 @@ behaviour was specified as tests first: `test\test_blocks.cpp`,
 against a structural dump of the parsed document, and `test_layout.cpp` /
 `test_search.cpp` cover wrapping, padding, styling, selection and find.
 
-`test\fixtures\showcase.md` exercises every rendered feature in one document —
-open it after a change to eyeball the result.
+`test\fixtures\showcase.md` exercises every rendered feature in one document and
+`test\fixtures\syntax.md` covers every highlighted language plus in-document and
+cross-file links — open them after a change to eyeball the result.
 
 ## Usage
 
 | Action | How |
 | --- | --- |
-| Open a file | `File → Open`, `Ctrl+O`, or pass a path on the command line |
+| Open a file | drop it on the window, `File → Open`, `Ctrl+O`, or pass a path on the command line |
+| Reload | `F5` (external edits are picked up on their own, within a second) |
+| Zoom | `Ctrl`+scroll, `Ctrl`+`+` / `Ctrl`+`-`, `Ctrl`+`0` to reset |
+| Follow a link | click it — headings and other Markdown files open in place, everything else in your browser |
+| Back / forward | `Alt+Left` / `Alt+Right`, `Backspace`, or the mouse thumb buttons |
 | Show the outline | click the chevron at the top of the left strip; click it again to collapse |
 | Jump to a heading | click it in the outline |
 | Copy | select with the mouse, then `Edit → Copy` or `Ctrl+C` (`Ctrl+A` selects all) |
-| Find | type in the search box, then `Enter` or the **Search** button |
+| Find | `Ctrl+F` or the magnifier opens the box and focuses it; `Enter` or the **Search** button searches |
 | Find next / previous | `F3` / `Shift+F3` (also `Enter` / `Shift+Enter` in the box) |
-| Focus the search box | `Ctrl+F` |
+| Close the search box | `Esc`, or the magnifier again |
 | Scroll | wheel, scrollbar, arrows, `PgUp`/`PgDn`, `Home`/`End` |
 | Project page | `About → Simple Markdown Viewer` |
 
@@ -96,17 +134,36 @@ src\md_types.h      document model and the parse/dump entry points
 src\md_parser.cpp   block and inline parser (CommonMark + GFM extensions)
 src\md_debug.cpp    structural dump used by the tests
 src\layout.h/.cpp   width-driven layout: runs, decorations, hit testing, selection
+src\highlight.*     per-language lexers for fenced code blocks
 src\search.h/.cpp   find-all plus next/previous with wrap-around
 src\win_theme.*     light/dark palettes and OS dark-mode integration
 src\win_text.*      GDI font cache (text measurement) and WIC image loading
+src\win_chrome.*    custom title bar (padded caption + buttons) and menu strip
 src\win_outline.*   collapsible heading-outline panel
 src\win_settings.*  window placement and panel state persistence (HKCU)
 src\win_viewer.*    document view window and the frame that hosts menu + search bar
 src\main.cpp        entry point
 ```
 
-Window state lives in `HKCU\Software\Simple Markdown Viewer`; delete that key to
-get the defaults back. The outline starts collapsed on first run.
+Window placement, outline state and zoom live in
+`HKCU\Software\Simple Markdown Viewer`; delete that key to get the defaults
+back. The outline starts collapsed on first run.
+
+The open document is polled once a second for external edits — a single
+`GetFileAttributesEx` call, so an idle viewer costs nothing measurable.
+
+## The window frame
+
+The title bar is drawn by the application, not by Windows: `WM_NCCALCSIZE`
+hands the caption strip to the client area and `src\win_chrome.cpp` paints it.
+That is the only way to control the padding around the filename and the
+minimise / maximise / close buttons, which is why the menu bar is custom drawn
+too — the system draws it in the same non-client space.
+
+Everything the standard frame does still works, through hit testing: drag to
+move, double-click to maximise, right-click for the system menu, Aero Snap,
+snap layouts on the maximise button, and the resize borders. `Alt` reveals the
+menu mnemonics, `Alt+F` / `Alt+E` / `Alt+A` and `F10` open the menus.
 
 ## Notes and limits
 

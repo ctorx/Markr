@@ -45,6 +45,17 @@ enum class ColorRole {
     MarkText,
     InlineCodeBg,
     Checkbox,
+
+    // Syntax highlighting inside fenced code blocks.
+    CodeKeyword,
+    CodeType,
+    CodeString,
+    CodeNumber,
+    CodeComment,
+    CodeDirective,
+    CodeTag,
+    CodeAttribute,
+    CodeFunction,
 };
 
 struct Style {
@@ -109,6 +120,7 @@ struct Rect {
 // One heading, for the document outline / navigation panel.
 struct OutlineEntry {
     std::wstring text;
+    std::wstring anchor; // GitHub-style slug, for in-document #links
     int level = 1;
     int y = 0; // top of the heading block in document coordinates
 };
@@ -144,6 +156,9 @@ struct IImageSource {
 struct Metrics {
     int padding = 20;        // required content padding on all four sides
     int blockSpacing = 12;   // vertical gap between blocks
+    int headingRuleGap = 8;      // heading text to the rule underneath it
+    int headingRuleSpacing = 14; // rule to the next block, on top of blockSpacing
+    int sectionSpacing = 18;     // extra space above a section heading
     int listIndent = 28;
     int quoteIndent = 18;
     int quoteBarWidth = 4;
@@ -155,6 +170,9 @@ struct Metrics {
 
 Layout buildLayout(const md::Document& doc, const IMeasurer& measurer, const Metrics& metrics,
                    int viewportWidth, IImageSource* images = nullptr);
+
+// Index of the heading with this anchor, or -1. Comparison is case-insensitive.
+int outlineIndexForAnchor(const Layout& layout, const std::wstring& anchor);
 
 // Hit testing and selection helpers.
 size_t indexAtPoint(const Layout& layout, int x, int y);

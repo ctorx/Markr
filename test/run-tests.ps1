@@ -19,7 +19,8 @@ $sources = @(
     'src\md_parser.cpp',
     'src\md_debug.cpp',
     'src\layout.cpp',
-    'src\search.cpp'
+    'src\search.cpp',
+    'src\highlight.cpp'
 ) | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ }
 $sources += (Get-ChildItem (Join-Path $root 'test') -Filter '*.cpp' | ForEach-Object { $_.FullName })
 

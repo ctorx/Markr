@@ -42,6 +42,16 @@ Theme makeTheme(bool dark) {
         set(t, ColorRole::InlineCodeBg, RGB(239, 241, 243));
         set(t, ColorRole::Checkbox, RGB(101, 109, 118));
 
+        set(t, ColorRole::CodeKeyword, RGB(207, 34, 46));
+        set(t, ColorRole::CodeType, RGB(149, 56, 0));
+        set(t, ColorRole::CodeString, RGB(10, 48, 105));
+        set(t, ColorRole::CodeNumber, RGB(5, 80, 174));
+        set(t, ColorRole::CodeComment, RGB(110, 119, 129));
+        set(t, ColorRole::CodeDirective, RGB(130, 80, 223));
+        set(t, ColorRole::CodeTag, RGB(17, 99, 41));
+        set(t, ColorRole::CodeAttribute, RGB(5, 80, 174));
+        set(t, ColorRole::CodeFunction, RGB(130, 80, 223));
+
         t.selection = RGB(184, 213, 250);
         t.searchHighlight = RGB(255, 240, 160);
         t.searchCurrent = RGB(255, 186, 61);
@@ -57,9 +67,15 @@ Theme makeTheme(bool dark) {
         t.buttonPressed = RGB(226, 226, 226);
         t.buttonBorder = RGB(188, 188, 188);
         t.buttonText = RGB(31, 35, 40);
-        t.menuBackground = GetSysColor(COLOR_MENUBAR);
-        t.menuText = GetSysColor(COLOR_MENUTEXT);
-        t.menuHot = GetSysColor(COLOR_HIGHLIGHT);
+        t.menuBackground = RGB(246, 246, 246);
+        t.menuText = RGB(26, 26, 26);
+        t.menuHot = RGB(230, 230, 230);
+        t.captionBackground = RGB(252, 252, 252);
+        t.captionInactive = RGB(246, 246, 246);
+        t.captionText = RGB(26, 26, 26);
+        t.captionTextInactive = RGB(130, 130, 130);
+        t.captionButtonHot = RGB(232, 232, 232);
+        t.captionButtonPressed = RGB(216, 216, 216);
         return t;
     }
 
@@ -81,6 +97,16 @@ Theme makeTheme(bool dark) {
     set(t, ColorRole::InlineCodeBg, RGB(38, 44, 54));
     set(t, ColorRole::Checkbox, RGB(139, 148, 158));
 
+    set(t, ColorRole::CodeKeyword, RGB(255, 123, 114));
+    set(t, ColorRole::CodeType, RGB(255, 166, 87));
+    set(t, ColorRole::CodeString, RGB(165, 214, 255));
+    set(t, ColorRole::CodeNumber, RGB(121, 192, 255));
+    set(t, ColorRole::CodeComment, RGB(139, 148, 158));
+    set(t, ColorRole::CodeDirective, RGB(210, 168, 255));
+    set(t, ColorRole::CodeTag, RGB(126, 231, 135));
+    set(t, ColorRole::CodeAttribute, RGB(121, 192, 255));
+    set(t, ColorRole::CodeFunction, RGB(210, 168, 255));
+
     t.selection = RGB(31, 75, 127);
     t.searchHighlight = RGB(84, 72, 30);
     t.searchCurrent = RGB(158, 118, 30);
@@ -99,6 +125,12 @@ Theme makeTheme(bool dark) {
     t.menuBackground = RGB(32, 32, 32);
     t.menuText = RGB(230, 237, 243);
     t.menuHot = RGB(60, 60, 60);
+    t.captionBackground = RGB(26, 26, 26);
+    t.captionInactive = RGB(32, 32, 32);
+    t.captionText = RGB(240, 246, 252);
+    t.captionTextInactive = RGB(140, 148, 158);
+    t.captionButtonHot = RGB(58, 58, 58);
+    t.captionButtonPressed = RGB(72, 72, 72);
     return t;
 }
 

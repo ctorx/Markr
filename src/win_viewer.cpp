@@ -29,50 +29,16 @@ enum Command {
     ID_FOCUS_SEARCH,
     ID_VIEW_SCROLLED,
     ID_VIEW_DOCUMENT_CHANGED,
+    ID_RELOAD,
+    ID_NAV_BACK,
+    ID_NAV_FORWARD,
+    ID_ZOOM_IN,
+    ID_ZOOM_OUT,
+    ID_ZOOM_RESET,
 };
 
-// Undocumented "UAH" menu messages. Windows sends these while drawing the menu
-// bar; handling them is the only supported-in-practice way to make the bar
-// follow a dark theme.
-constexpr UINT kUahDrawMenu = 0x0091;
-constexpr UINT kUahDrawMenuItem = 0x0092;
-
-struct UahMenu {
-    HMENU menu;
-    HDC dc;
-    DWORD flags;
-};
-
-struct UahMenuItemMetrics {
-    DWORD data[8];
-};
-
-struct UahMenuPopupMetrics {
-    DWORD widths[4];
-    DWORD updateMaxWidths : 2;
-};
-
-struct UahMenuItem {
-    int position;
-    UahMenuItemMetrics metrics;
-    UahMenuPopupMetrics popupMetrics;
-};
-
-struct UahDrawMenuItem {
-    DRAWITEMSTRUCT item;
-    UahMenu menu;
-    UahMenuItem menuItem;
-};
-
-bool menuBarRect(HWND hwnd, RECT* out) {
-    MENUBARINFO info = {sizeof(info)};
-    if (!GetMenuBarInfo(hwnd, OBJID_MENU, 0, &info)) return false;
-    RECT window = {};
-    if (!GetWindowRect(hwnd, &window)) return false;
-    *out = info.rcBar;
-    OffsetRect(out, -window.left, -window.top);
-    return true;
-}
+// Polls the open document for external edits.
+constexpr UINT_PTR kFileWatchTimer = 1;
 
 int windowDpi(HWND hwnd) {
     using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
@@ -151,6 +117,48 @@ std::string readFileUtf8(const std::wstring& path, bool* ok) {
     return bytes;
 }
 
+bool hasUriScheme(const std::wstring& url) {
+    size_t colon = url.find(L':');
+    if (colon == std::wstring::npos || colon < 2) return false; // "C:\..." is a path
+    size_t slash = url.find_first_of(L"/\\");
+    if (slash != std::wstring::npos && slash < colon) return false;
+    for (size_t i = 0; i < colon; ++i) {
+        wchar_t c = url[i];
+        if (!iswalnum(c) && c != L'+' && c != L'-' && c != L'.') return false;
+    }
+    return true;
+}
+
+std::wstring percentDecode(const std::wstring& text) {
+    std::wstring out;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == L'%' && i + 2 < text.size() && iswxdigit(text[i + 1]) &&
+            iswxdigit(text[i + 2])) {
+            wchar_t buffer[3] = {text[i + 1], text[i + 2], 0};
+            out.push_back(static_cast<wchar_t>(wcstol(buffer, nullptr, 16)));
+            i += 2;
+        } else {
+            out.push_back(text[i]);
+        }
+    }
+    return out;
+}
+
+bool isMarkdownPath(const std::wstring& path) {
+    size_t dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos) return false;
+    std::wstring extension = path.substr(dot + 1);
+    for (wchar_t& c : extension) c = static_cast<wchar_t>(towlower(c));
+    return extension == L"md" || extension == L"markdown" || extension == L"mdown" ||
+           extension == L"mkd" || extension == L"mdtxt" || extension == L"text" ||
+           extension == L"txt";
+}
+
+std::wstring directoryOf(const std::wstring& path) {
+    size_t slash = path.find_last_of(L"\\/");
+    return (slash == std::wstring::npos) ? std::wstring() : path.substr(0, slash);
+}
+
 const char* const kWelcomeDocument =
     "# Simple Markdown Viewer\n"
     "\n"
@@ -158,10 +166,14 @@ const char* const kWelcomeDocument =
     "\n"
     "## Getting started\n"
     "\n"
-    "- **File -> Open** (`Ctrl+O`) to open a `.md` file\n"
-    "- Type in the search box and press **Enter** or the **Search** button\n"
+    "- **Drag a file onto this window**, or **File -> Open** (`Ctrl+O`)\n"
+    "- `Ctrl+F`, or the magnifier at the right of the menu bar, opens the search box\n"
+    "- Press **Enter** or the **Search** button to find; `Esc` closes the box\n"
     "- `F3` finds the next match, `Shift+F3` the previous one\n"
     "- Select text with the mouse, then **Edit -> Copy** (`Ctrl+C`)\n"
+    "- `F5` reloads; edits made in another editor are picked up automatically\n"
+    "- `Ctrl+scroll` or `Ctrl+plus` / `Ctrl+minus` zooms, `Ctrl+0` resets\n"
+    "- Links to headings and to other Markdown files work; `Alt+Left` goes back\n"
     "\n"
     "> The window follows the system light or dark theme and rewraps as you resize it.\n";
 
@@ -211,9 +223,32 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
     switch (message) {
         case WM_CREATE:
             dpi_ = windowDpi(hwnd_);
-            fonts_.rebuild(dpi_);
+            fonts_.rebuild(contentDpi());
             theme_ = makeTheme(systemUsesDarkMode());
+            DragAcceptFiles(hwnd_, TRUE);
+            SetTimer(hwnd_, kFileWatchTimer, 1000, nullptr);
             return 0;
+
+        case WM_DESTROY:
+            KillTimer(hwnd_, kFileWatchTimer);
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == kFileWatchTimer && !path_.empty() && fileChangedOnDisk()) reload();
+            return 0;
+
+        case WM_DROPFILES: {
+            HDROP drop = reinterpret_cast<HDROP>(wParam);
+            wchar_t path[MAX_PATH * 2] = {0};
+            if (DragQueryFileW(drop, 0, path, ARRAYSIZE(path)) > 0) {
+                back_.clear();
+                forward_.clear();
+                loadFile(path);
+            }
+            DragFinish(drop);
+            SetFocus(hwnd_);
+            return 0;
+        }
 
         case WM_SIZE:
             relayout();
@@ -249,6 +284,10 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_MOUSEWHEEL: {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            if (GetKeyState(VK_CONTROL) < 0) {
+                adjustZoom(delta > 0 ? 10 : -10);
+                return 0;
+            }
             UINT lines = 3;
             SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
             if (lines == 0 || lines > 20) lines = 3;
@@ -268,6 +307,21 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 case VK_END: scrollTo(layout_.contentHeight); return 0;
                 case 'C':
                     if (GetKeyState(VK_CONTROL) < 0) copySelection();
+                    return 0;
+                case VK_BACK:
+                    goBack();
+                    return 0;
+                case VK_OEM_PLUS:
+                case VK_ADD:
+                    if (GetKeyState(VK_CONTROL) < 0) adjustZoom(10);
+                    return 0;
+                case VK_OEM_MINUS:
+                case VK_SUBTRACT:
+                    if (GetKeyState(VK_CONTROL) < 0) adjustZoom(-10);
+                    return 0;
+                case '0':
+                case VK_NUMPAD0:
+                    if (GetKeyState(VK_CONTROL) < 0) setZoomPercent(100);
                     return 0;
                 case VK_TAB: {
                     HWND next = GetNextDlgTabItem(GetParent(hwnd_), hwnd_,
@@ -325,13 +379,17 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                     int link = view::linkAtPoint(layout_, GET_X_LPARAM(lParam),
                                                  GET_Y_LPARAM(lParam) + scrollY_);
                     if (link >= 0 && link < static_cast<int>(layout_.links.size())) {
-                        ShellExecuteW(hwnd_, L"open", layout_.links[link].url.c_str(), nullptr,
-                                      nullptr, SW_SHOWNORMAL);
+                        activateLink(layout_.links[link].url);
                     }
                 }
             }
             return 0;
         }
+
+        case WM_XBUTTONUP:
+            if (GET_XBUTTON_WPARAM(wParam) == XBUTTON1) goBack();
+            else if (GET_XBUTTON_WPARAM(wParam) == XBUTTON2) goForward();
+            return TRUE;
 
         case WM_SETCURSOR: {
             POINT p = {};
@@ -364,8 +422,30 @@ void DocumentView::setTheme(const Theme& theme) {
 
 void DocumentView::setDpi(int dpi) {
     dpi_ = dpi > 0 ? dpi : 96;
-    fonts_.rebuild(dpi_);
+    fonts_.rebuild(contentDpi());
     relayout();
+}
+
+void DocumentView::setZoomPercent(int percent) {
+    percent = std::max(50, std::min(300, percent));
+    if (percent == zoomPercent_) return;
+    zoomPercent_ = percent;
+    fonts_.rebuild(contentDpi());
+    relayoutKeepingPosition();
+}
+
+void DocumentView::adjustZoom(int delta) { setZoomPercent(zoomPercent_ + delta); }
+
+void DocumentView::relayoutKeepingPosition() {
+    // Keep the same part of the document in view across a zoom or reflow.
+    double ratio = layout_.contentHeight > 0
+                       ? static_cast<double>(scrollY_) / layout_.contentHeight
+                       : 0.0;
+    relayout();
+    int target = static_cast<int>(ratio * layout_.contentHeight);
+    scrollY_ = 0;
+    scrollTo(target);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 bool DocumentView::loadFile(const std::wstring& path) {
@@ -374,6 +454,52 @@ bool DocumentView::loadFile(const std::wstring& path) {
     if (!ok) return false;
     setDocument(std::move(utf8), path);
     return true;
+}
+
+void DocumentView::rememberFileStamp() {
+    lastWriteTime_ = FILETIME{0, 0};
+    lastFileSize_ = 0;
+    if (path_.empty()) return;
+
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    if (!GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &data)) return;
+    lastWriteTime_ = data.ftLastWriteTime;
+    lastFileSize_ = (static_cast<unsigned long long>(data.nFileSizeHigh) << 32) |
+                    data.nFileSizeLow;
+}
+
+bool DocumentView::fileChangedOnDisk() const {
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    if (!GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &data)) return false;
+    unsigned long long size =
+        (static_cast<unsigned long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    return size != lastFileSize_ ||
+           CompareFileTime(&data.ftLastWriteTime, &lastWriteTime_) != 0;
+}
+
+void DocumentView::reload() {
+    if (path_.empty()) return;
+
+    bool ok = false;
+    std::string utf8 = readFileUtf8(path_, &ok);
+    if (!ok) {
+        rememberFileStamp(); // stop retrying until it changes again
+        return;
+    }
+
+    int scroll = scrollY_;
+    std::wstring term = searchTerm_;
+    std::wstring path = path_;
+
+    setDocument(std::move(utf8), path);
+
+    scrollTo(scroll);
+    if (!term.empty()) {
+        searchTerm_ = term;
+        matches_ = view::findAll(layout_.text, term, false);
+        currentMatch_ = -1;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void DocumentView::showWelcome() {
@@ -392,9 +518,119 @@ void DocumentView::setDocument(std::string utf8, const std::wstring& path) {
     scrollY_ = 0;
     selectionAnchor_ = selectionFocus_ = 0;
     clearSearch();
+    rememberFileStamp();
     relayout();
     InvalidateRect(hwnd_, nullptr, TRUE);
     notifyParent(ID_VIEW_DOCUMENT_CHANGED);
+}
+
+void DocumentView::activateLink(const std::wstring& url) {
+    if (url.empty()) return;
+
+    if (url[0] == L'#') {
+        jumpToAnchor(percentDecode(url.substr(1)), true);
+        return;
+    }
+    if (hasUriScheme(url)) {
+        ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+
+    // A document-relative path, optionally with a #fragment.
+    std::wstring target = url;
+    std::wstring fragment;
+    size_t hash = target.find(L'#');
+    if (hash != std::wstring::npos) {
+        fragment = percentDecode(target.substr(hash + 1));
+        target = target.substr(0, hash);
+    }
+    if (target.empty()) {
+        jumpToAnchor(fragment, true);
+        return;
+    }
+
+    target = percentDecode(target);
+    for (wchar_t& c : target) {
+        if (c == L'/') c = L'\\';
+    }
+
+    std::wstring resolved = target;
+    std::wstring base = directoryOf(path_);
+    if (PathIsRelativeW(target.c_str()) && !base.empty()) {
+        wchar_t combined[MAX_PATH * 2] = {0};
+        PathCombineW(combined, base.c_str(), target.c_str());
+        resolved = combined;
+    }
+
+    if (isMarkdownPath(resolved) &&
+        GetFileAttributesW(resolved.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        navigateToFile(resolved, fragment);
+        return;
+    }
+    ShellExecuteW(hwnd_, L"open", resolved.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+bool DocumentView::jumpToAnchor(const std::wstring& anchor, bool record) {
+    int index = view::outlineIndexForAnchor(layout_, anchor);
+    if (index < 0) {
+        MessageBeep(MB_OK);
+        return false;
+    }
+    if (record) recordHistory();
+    scrollTo(layout_.outline[index].y - scale(8));
+    return true;
+}
+
+void DocumentView::navigateToFile(const std::wstring& path, const std::wstring& anchor) {
+    recordHistory();
+    if (!loadFile(path)) {
+        if (!back_.empty()) back_.pop_back();
+        return;
+    }
+    if (!anchor.empty()) jumpToAnchor(anchor, false);
+}
+
+void DocumentView::recordHistory() {
+    HistoryEntry entry;
+    entry.path = path_;
+    entry.scrollY = scrollY_;
+    back_.push_back(entry);
+    forward_.clear();
+}
+
+void DocumentView::restoreHistory(const std::wstring& path, int scroll) {
+    if (path != path_) {
+        if (path.empty()) {
+            showWelcome();
+        } else if (!loadFile(path)) {
+            return;
+        }
+    }
+    scrollTo(scroll);
+}
+
+void DocumentView::goBack() {
+    if (back_.empty()) return;
+    HistoryEntry current;
+    current.path = path_;
+    current.scrollY = scrollY_;
+
+    HistoryEntry target = back_.back();
+    back_.pop_back();
+    restoreHistory(target.path, target.scrollY);
+    forward_.push_back(current);
+}
+
+void DocumentView::goForward() {
+    if (forward_.empty()) return;
+    HistoryEntry current;
+    current.path = path_;
+    current.scrollY = scrollY_;
+
+    HistoryEntry target = forward_.back();
+    forward_.pop_back();
+    restoreHistory(target.path, target.scrollY);
+    back_.push_back(current);
 }
 
 void DocumentView::relayout() {
@@ -405,6 +641,9 @@ void DocumentView::relayout() {
     view::Metrics metrics;
     metrics.padding = scale(20);
     metrics.blockSpacing = scale(12);
+    metrics.headingRuleGap = scale(9);
+    metrics.headingRuleSpacing = scale(16);
+    metrics.sectionSpacing = scale(20);
     metrics.listIndent = scale(26);
     metrics.quoteIndent = scale(18);
     metrics.quoteBarWidth = std::max(2, scale(4));
@@ -725,22 +964,20 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     theme_ = makeTheme(systemUsesDarkMode());
     WindowState saved = loadWindowState();
     startExpanded_ = saved.outlineExpanded;
+    startZoom_ = saved.zoomPercent;
 
-    HMENU fileMenu = CreatePopupMenu();
-    AppendMenuW(fileMenu, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
-    AppendMenuW(fileMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(fileMenu, MF_STRING, ID_FILE_EXIT, L"E&xit");
+    // The menus stay unattached: the window draws its own strip, because owning
+    // the caption means owning everything the system would put beside it.
+    fileMenu_ = CreatePopupMenu();
+    AppendMenuW(fileMenu_, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
+    AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(fileMenu_, MF_STRING, ID_FILE_EXIT, L"E&xit");
 
-    HMENU editMenu = CreatePopupMenu();
-    AppendMenuW(editMenu, MF_STRING | MF_GRAYED, ID_EDIT_COPY, L"&Copy\tCtrl+C");
+    editMenu_ = CreatePopupMenu();
+    AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_EDIT_COPY, L"&Copy\tCtrl+C");
 
-    HMENU aboutMenu = CreatePopupMenu();
-    AppendMenuW(aboutMenu, MF_STRING, ID_ABOUT_PROJECT, L"&Simple Markdown Viewer");
-
-    HMENU menuBar = CreateMenu();
-    AppendMenuW(menuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
-    AppendMenuW(menuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(editMenu), L"&Edit");
-    AppendMenuW(menuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(aboutMenu), L"&About");
+    aboutMenu_ = CreatePopupMenu();
+    AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_PROJECT, L"&Simple Markdown Viewer");
 
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT, width = 1040, height = 780;
     if (saved.valid) {
@@ -752,7 +989,7 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
 
     hwnd_ = CreateWindowExW(0, kFrameClass, kAppTitle,
                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height,
-                            nullptr, menuBar, instance, this);
+                            nullptr, nullptr, instance, this);
     if (!hwnd_) return false;
 
     ACCEL accelerators[] = {
@@ -761,6 +998,14 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
         {FVIRTKEY | FCONTROL, 'F', ID_FOCUS_SEARCH},
         {FVIRTKEY, VK_F3, ID_FIND_NEXT},
         {FVIRTKEY | FSHIFT, VK_F3, ID_FIND_PREVIOUS},
+        {FVIRTKEY, VK_F5, ID_RELOAD},
+        {FVIRTKEY | FALT, VK_LEFT, ID_NAV_BACK},
+        {FVIRTKEY | FALT, VK_RIGHT, ID_NAV_FORWARD},
+        {FVIRTKEY | FCONTROL, VK_OEM_PLUS, ID_ZOOM_IN},
+        {FVIRTKEY | FCONTROL, VK_ADD, ID_ZOOM_IN},
+        {FVIRTKEY | FCONTROL, VK_OEM_MINUS, ID_ZOOM_OUT},
+        {FVIRTKEY | FCONTROL, VK_SUBTRACT, ID_ZOOM_OUT},
+        {FVIRTKEY | FCONTROL, '0', ID_ZOOM_RESET},
     };
     accelerators_ = CreateAcceleratorTableW(accelerators, ARRAYSIZE(accelerators));
 
@@ -785,6 +1030,7 @@ void AppWindow::persistWindowState() {
     state.maximized = placement.showCmd == SW_SHOWMAXIMIZED ||
                       (placement.flags & WPF_RESTORETOMAXIMIZED) != 0;
     state.outlineExpanded = outline_.expanded();
+    state.zoomPercent = view_.zoomPercent();
     saveWindowState(state);
 }
 
@@ -809,6 +1055,8 @@ LRESULT CALLBACK AppWindow::windowProc(HWND hwnd, UINT message, WPARAM wParam, L
         CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
         self = static_cast<AppWindow*>(cs->lpCreateParams);
         self->hwnd_ = hwnd;
+        // WM_NCCALCSIZE can arrive before WM_CREATE and needs the frame metrics.
+        self->dpi_ = windowDpi(hwnd);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
     if (!self) return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -816,14 +1064,120 @@ LRESULT CALLBACK AppWindow::windowProc(HWND hwnd, UINT message, WPARAM wParam, L
 }
 
 int AppWindow::barHeight() const {
+    if (!searchVisible_) return 0;
     int fieldHeight = std::max(scale(26), scale(24));
     return scale(10) * 2 + fieldHeight;
 }
 
+void AppWindow::showSearch(bool show) {
+    if (searchVisible_ == show) {
+        if (show) {
+            SetFocus(searchField_);
+            SendMessageW(searchField_, EM_SETSEL, 0, -1);
+        }
+        return;
+    }
+
+    searchVisible_ = show;
+    chrome_.setSearchActive(show);
+    ShowWindow(searchField_, show ? SW_SHOW : SW_HIDE);
+    ShowWindow(searchButton_, show ? SW_SHOW : SW_HIDE);
+    layoutChildren();
+    InvalidateRect(hwnd_, nullptr, TRUE);
+
+    if (show) {
+        SetFocus(searchField_);
+        SendMessageW(searchField_, EM_SETSEL, 0, -1);
+    } else {
+        searchFailed_ = false;
+        SetFocus(view_.hwnd());
+    }
+}
+
 LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+        case WM_NCCALCSIZE: {
+            if (!wParam) break;
+            NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+            RECT& rect = params->rgrc[0];
+
+            int borderX = GetSystemMetricsForDpi(SM_CXFRAME, static_cast<UINT>(dpi_)) +
+                          GetSystemMetricsForDpi(SM_CXPADDEDBORDER, static_cast<UINT>(dpi_));
+            int borderY = GetSystemMetricsForDpi(SM_CYFRAME, static_cast<UINT>(dpi_)) +
+                          GetSystemMetricsForDpi(SM_CXPADDEDBORDER, static_cast<UINT>(dpi_));
+
+            rect.left += borderX;
+            rect.right -= borderX;
+            rect.bottom -= borderY;
+            // The top border is kept as client area so the caption can be drawn
+            // there; when maximised the frame hangs off-screen, so inset it.
+            WINDOWPLACEMENT placement = {sizeof(placement)};
+            if (GetWindowPlacement(hwnd_, &placement) && placement.showCmd == SW_SHOWMAXIMIZED) {
+                rect.top += borderY;
+            }
+            return 0;
+        }
+
+        case WM_NCHITTEST: {
+            LRESULT hit = DefWindowProcW(hwnd_, message, wParam, lParam);
+            if (hit != HTCLIENT) return hit;
+
+            POINT point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ScreenToClient(hwnd_, &point);
+            LRESULT chromeHit = chrome_.hitTest(point);
+            return chromeHit == HTNOWHERE ? HTCLIENT : chromeHit;
+        }
+
+        case WM_NCMOUSEMOVE: {
+            chrome_.setHot(static_cast<LRESULT>(wParam));
+            TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT, hwnd_, 0};
+            TrackMouseEvent(&track);
+            break;
+        }
+
+        case WM_NCMOUSELEAVE:
+            chrome_.clearHot();
+            break;
+
+        case WM_NCLBUTTONDOWN:
+            if (wParam == HTMINBUTTON || wParam == HTMAXBUTTON || wParam == HTCLOSE) {
+                chrome_.setPressed(static_cast<LRESULT>(wParam));
+                return 0;
+            }
+            break;
+
+        case WM_NCLBUTTONUP: {
+            LRESULT pressed = chrome_.pressed();
+            chrome_.setPressed(HTNOWHERE);
+            if (pressed != HTNOWHERE && pressed == static_cast<LRESULT>(wParam)) {
+                if (pressed == HTMINBUTTON) {
+                    PostMessageW(hwnd_, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                } else if (pressed == HTMAXBUTTON) {
+                    WINDOWPLACEMENT placement = {sizeof(placement)};
+                    bool maximized = GetWindowPlacement(hwnd_, &placement) &&
+                                     placement.showCmd == SW_SHOWMAXIMIZED;
+                    PostMessageW(hwnd_, WM_SYSCOMMAND, maximized ? SC_RESTORE : SC_MAXIMIZE, 0);
+                } else {
+                    PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                }
+                return 0;
+            }
+            break;
+        }
+
+        case WM_NCACTIVATE:
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
+
         case WM_CREATE: {
             dpi_ = windowDpi(hwnd_);
+            chrome_.setDpi(dpi_);
+            chrome_.initialize(hwnd_, fileMenu_, editMenu_, aboutMenu_);
+            chrome_.setTitle(kAppTitle);
+            // Follow the system convention: menu mnemonics stay hidden until the
+            // user reaches for the keyboard.
+            SendMessageW(hwnd_, WM_CHANGEUISTATE,
+                         MAKEWPARAM(UIS_INITIALIZE, UISF_HIDEACCEL | UISF_HIDEFOCUS), 0);
 
             NONCLIENTMETRICSW ncm = {sizeof(ncm)};
             SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0,
@@ -832,8 +1186,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             menuFont_ = CreateFontIndirectW(&ncm.lfMenuFont);
 
             searchField_ = CreateWindowExW(0, L"EDIT", L"",
-                                           WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                               ES_AUTOHSCROLL | ES_LEFT,
+                                           WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL | ES_LEFT,
                                            0, 0, 10, 10, hwnd_,
                                            reinterpret_cast<HMENU>(ID_SEARCH_FIELD), instance_,
                                            nullptr);
@@ -844,8 +1197,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                               reinterpret_cast<DWORD_PTR>(this));
 
             searchButton_ = CreateWindowExW(0, L"BUTTON", L"Search",
-                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                                            0, 0, 10, 10,
+                                            WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                             hwnd_, reinterpret_cast<HMENU>(ID_SEARCH_BUTTON),
                                             instance_, nullptr);
             SendMessageW(searchButton_, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
@@ -855,7 +1207,6 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
             outline_.create(hwnd_, instance_);
             outline_.setDpi(dpi_);
-            outline_.setUiFont(uiFont_);
             outline_.setExpanded(startExpanded_);
             outline_.setOnToggle([this]() {
                 outline_.setExpanded(!outline_.expanded());
@@ -864,8 +1215,10 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             outline_.setOnSelect([this](size_t index) { view_.scrollToOutlineEntry(index); });
 
             view_.create(hwnd_, instance_);
+            view_.setZoomPercent(startZoom_);
             applyTheme();
             layoutChildren();
+            DragAcceptFiles(hwnd_, TRUE);
             return 0;
         }
 
@@ -925,6 +1278,8 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSEMOVE: {
             POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (chrome_.updateMenuHover(p)) InvalidateRect(hwnd_, nullptr, FALSE);
+
             RECT button = {};
             GetWindowRect(searchButton_, &button);
             MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&button), 2);
@@ -932,20 +1287,48 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (hot != buttonHot_) {
                 buttonHot_ = hot;
                 InvalidateRect(searchButton_, nullptr, TRUE);
-                TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd_, 0};
-                TrackMouseEvent(&track);
             }
+            TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd_, 0};
+            TrackMouseEvent(&track);
             return 0;
         }
 
-        case WM_MOUSELEAVE:
+        case WM_MOUSELEAVE: {
+            POINT outside = {-1, -1};
+            if (chrome_.updateMenuHover(outside)) InvalidateRect(hwnd_, nullptr, FALSE);
             if (buttonHot_) {
                 buttonHot_ = false;
                 InvalidateRect(searchButton_, nullptr, TRUE);
             }
             return 0;
+        }
+
+        case WM_LBUTTONDOWN: {
+            POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (chrome_.hitSearchButton(p)) {
+                showSearch(!searchVisible_);
+                return 0;
+            }
+            if (chrome_.openMenuAt(p)) return 0;
+            break;
+        }
+
+        case WM_SYSCHAR:
+            if (chrome_.openMenuForMnemonic(static_cast<wchar_t>(wParam))) return 0;
+            break;
+
+        case WM_SYSKEYDOWN:
+            if (wParam == VK_F10 && GetKeyState(VK_SHIFT) >= 0) {
+                chrome_.openFirstMenu();
+                return 0;
+            }
+            break;
 
         case WM_MOUSEWHEEL:
+            return SendMessageW(view_.hwnd(), message, wParam, lParam);
+
+        case WM_DROPFILES:
+            // A drop on the frame chrome is treated as a drop on the document.
             return SendMessageW(view_.hwnd(), message, wParam, lParam);
 
         case WM_INITMENUPOPUP: {
@@ -956,7 +1339,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                              reinterpret_cast<LPARAM>(&end));
                 editHasSelection = start != end;
             }
-            EnableMenuItem(GetMenu(hwnd_), ID_EDIT_COPY,
+            EnableMenuItem(editMenu_, ID_EDIT_COPY,
                            MF_BYCOMMAND |
                                ((view_.hasSelection() || editHasSelection) ? MF_ENABLED
                                                                           : MF_GRAYED));
@@ -990,8 +1373,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     doSearch(false);
                     return 0;
                 case ID_FOCUS_SEARCH:
-                    SetFocus(searchField_);
-                    SendMessageW(searchField_, EM_SETSEL, 0, -1);
+                    showSearch(true);
                     return 0;
                 case ID_SEARCH_FIELD:
                     if (notification == EN_CHANGE && searchFailed_) {
@@ -1004,66 +1386,30 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 case ID_VIEW_DOCUMENT_CHANGED:
                     refreshOutline();
+                    updateTitle();
+                    return 0;
+                case ID_RELOAD:
+                    view_.reload();
+                    return 0;
+                case ID_NAV_BACK:
+                    view_.goBack();
+                    return 0;
+                case ID_NAV_FORWARD:
+                    view_.goForward();
+                    return 0;
+                case ID_ZOOM_IN:
+                    view_.adjustZoom(10);
+                    return 0;
+                case ID_ZOOM_OUT:
+                    view_.adjustZoom(-10);
+                    return 0;
+                case ID_ZOOM_RESET:
+                    view_.setZoomPercent(100);
                     return 0;
                 default:
                     break;
             }
             break;
-        }
-
-        case kUahDrawMenu: {
-            if (!theme_.dark) break;
-            UahMenu* menu = reinterpret_cast<UahMenu*>(lParam);
-            RECT bar = {};
-            if (!menuBarRect(hwnd_, &bar)) break;
-            fillRect(menu->dc, bar, theme_.menuBackground);
-            return TRUE;
-        }
-
-        case kUahDrawMenuItem: {
-            if (!theme_.dark) break;
-            UahDrawMenuItem* draw = reinterpret_cast<UahDrawMenuItem*>(lParam);
-
-            wchar_t label[128] = {0};
-            MENUITEMINFOW info = {sizeof(info)};
-            info.fMask = MIIM_STRING;
-            info.dwTypeData = label;
-            info.cch = ARRAYSIZE(label) - 1;
-            GetMenuItemInfoW(draw->menu.menu, static_cast<UINT>(draw->menuItem.position), TRUE,
-                             &info);
-
-            bool highlighted = (draw->item.itemState & (ODS_HOTLIGHT | ODS_SELECTED)) != 0;
-            fillRect(draw->menu.dc, draw->item.rcItem,
-                     highlighted ? theme_.menuHot : theme_.menuBackground);
-
-            UINT flags = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
-            if (draw->item.itemState & ODS_NOACCEL) flags |= DT_HIDEPREFIX;
-
-            SetBkMode(draw->menu.dc, TRANSPARENT);
-            SetTextColor(draw->menu.dc, (draw->item.itemState & ODS_GRAYED)
-                                            ? theme_.role(view::ColorRole::Muted)
-                                            : theme_.menuText);
-            HGDIOBJ previous = SelectObject(draw->menu.dc, menuFont_);
-            DrawTextW(draw->menu.dc, label, -1, &draw->item.rcItem, flags);
-            SelectObject(draw->menu.dc, previous);
-            return TRUE;
-        }
-
-        case WM_NCACTIVATE:
-        case WM_NCPAINT: {
-            LRESULT result = DefWindowProcW(hwnd_, message, wParam, lParam);
-            if (theme_.dark) {
-                // Paint over the light one pixel seam the frame leaves under the
-                // menu bar.
-                RECT bar = {};
-                if (menuBarRect(hwnd_, &bar)) {
-                    RECT seam = {bar.left, bar.bottom, bar.right, bar.bottom + 1};
-                    HDC dc = GetWindowDC(hwnd_);
-                    fillRect(dc, seam, theme_.menuBackground);
-                    ReleaseDC(hwnd_, dc);
-                }
-            }
-            return result;
         }
 
         case WM_SETTINGCHANGE:
@@ -1084,8 +1430,8 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             menuFont_ = CreateFontIndirectW(&ncm.lfMenuFont);
             SendMessageW(searchField_, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
             SendMessageW(searchButton_, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
-            outline_.setUiFont(uiFont_);
             outline_.setDpi(dpi_);
+            chrome_.setDpi(dpi_);
             view_.setDpi(dpi_);
 
             RECT* suggested = reinterpret_cast<RECT*>(lParam);
@@ -1105,6 +1451,9 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (fieldBrush_) DeleteObject(fieldBrush_);
             if (uiFont_) DeleteObject(uiFont_);
             if (menuFont_) DeleteObject(menuFont_);
+            if (fileMenu_) DestroyMenu(fileMenu_);
+            if (editMenu_) DestroyMenu(editMenu_);
+            if (aboutMenu_) DestroyMenu(aboutMenu_);
             if (accelerators_) DestroyAcceleratorTable(accelerators_);
             PostQuitMessage(0);
             return 0;
@@ -1131,9 +1480,7 @@ LRESULT CALLBACK AppWindow::searchEditProc(HWND hwnd, UINT message, WPARAM wPara
             }
             if (wParam == VK_ESCAPE) {
                 self->view_.clearSearch();
-                self->searchFailed_ = false;
-                InvalidateRect(hwnd, nullptr, TRUE);
-                SetFocus(self->view_.hwnd());
+                self->showSearch(false);
                 return 0;
             }
             break;
@@ -1156,30 +1503,34 @@ void AppWindow::layoutChildren() {
 
     const int pad = scale(10);
     const int gap = scale(10);
+    const int chromeTop = chrome_.height();
     const int bar = barHeight();
-    const int fieldHeight = bar - pad * 2;
 
-    HDC dc = GetDC(hwnd_);
-    HGDIOBJ previous = SelectObject(dc, uiFont_);
-    SIZE textSize = {};
-    GetTextExtentPoint32W(dc, L"Search", 6, &textSize);
-    SelectObject(dc, previous);
-    ReleaseDC(hwnd_, dc);
+    if (searchVisible_) {
+        const int fieldHeight = bar - pad * 2;
 
-    const int textWidth = static_cast<int>(textSize.cx);
-    const int textHeight = static_cast<int>(textSize.cy);
+        HDC dc = GetDC(hwnd_);
+        HGDIOBJ previous = SelectObject(dc, uiFont_);
+        SIZE textSize = {};
+        GetTextExtentPoint32W(dc, L"Search", 6, &textSize);
+        SelectObject(dc, previous);
+        ReleaseDC(hwnd_, dc);
 
-    int buttonWidth = std::max(scale(88), textWidth + scale(32));
-    int buttonX = client.right - pad - buttonWidth;
-    int fieldWidth = std::max(scale(60), buttonX - gap - pad);
+        const int textWidth = static_cast<int>(textSize.cx);
+        const int textHeight = static_cast<int>(textSize.cy);
 
-    // The edit control sits inside the painted field frame so its text is
-    // vertically centred.
-    int inset = scale(5);
-    int editHeight = std::min(fieldHeight - inset, textHeight + scale(2));
-    MoveWindow(searchField_, pad + inset, pad + (fieldHeight - editHeight) / 2,
-               fieldWidth - inset * 2, editHeight, TRUE);
-    MoveWindow(searchButton_, buttonX, pad, buttonWidth, fieldHeight, TRUE);
+        int buttonWidth = std::max(scale(88), textWidth + scale(32));
+        int buttonX = client.right - pad - buttonWidth;
+        int fieldWidth = std::max(scale(60), buttonX - gap - pad);
+
+        // The edit control sits inside the painted field frame so its text is
+        // vertically centred.
+        int inset = scale(5);
+        int editHeight = std::min(fieldHeight - inset, textHeight + scale(2));
+        MoveWindow(searchField_, pad + inset, chromeTop + pad + (fieldHeight - editHeight) / 2,
+                   fieldWidth - inset * 2, editHeight, TRUE);
+        MoveWindow(searchButton_, buttonX, chromeTop + pad, buttonWidth, fieldHeight, TRUE);
+    }
 
     // Below the bar: the outline panel is flush to the left edge, and the
     // scrolling document sits in a box inset by the gutter on every side.
@@ -1188,13 +1539,14 @@ void AppWindow::layoutChildren() {
     const int panelWidth =
         std::max(outline_.collapsedWidth(),
                  std::min(outline_.panelWidth(), static_cast<int>(client.right) / 3));
-    const int belowBar = std::max(0, static_cast<int>(client.bottom) - bar);
-    MoveWindow(outline_.hwnd(), 0, bar, panelWidth, belowBar, TRUE);
+    const int contentTop = chromeTop + bar;
+    const int belowBar = std::max(0, static_cast<int>(client.bottom) - contentTop);
+    MoveWindow(outline_.hwnd(), 0, contentTop, panelWidth, belowBar, TRUE);
 
     int viewLeft = panelWidth + margin;
     int viewWidth = std::max(scale(120), static_cast<int>(client.right) - viewLeft - margin);
     int viewHeight = std::max(0, belowBar - margin * 2);
-    MoveWindow(view_.hwnd(), viewLeft, bar + margin, viewWidth, viewHeight, TRUE);
+    MoveWindow(view_.hwnd(), viewLeft, contentTop + margin, viewWidth, viewHeight, TRUE);
 
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -1204,27 +1556,34 @@ void AppWindow::paintChrome(HDC dc) {
     GetClientRect(hwnd_, &client);
 
     const int pad = scale(10);
+    const int chromeTop = chrome_.height();
     const int bar = barHeight();
     const int border = std::max(1, scale(1));
 
+    chrome_.paint(dc, client);
+
     // The gutter around the document box shares the document's background so the
     // scrolling area reads as an inset box.
-    RECT below = {0, bar, client.right, client.bottom};
+    RECT below = {0, chromeTop + bar, client.right, client.bottom};
     fillRect(dc, below, theme_.background);
 
-    RECT barRect = {0, 0, client.right, bar};
-    fillRect(dc, barRect, theme_.barBackground);
+    if (searchVisible_) {
+        RECT barRect = {0, chromeTop, client.right, chromeTop + bar};
+        fillRect(dc, barRect, theme_.barBackground);
 
-    RECT borderRect = {0, bar - border, client.right, bar};
-    fillRect(dc, borderRect, theme_.barBorder);
+        RECT borderRect = {0, chromeTop + bar - border, client.right, chromeTop + bar};
+        fillRect(dc, borderRect, theme_.barBorder);
 
-    RECT fieldRect = {};
-    GetWindowRect(searchField_, &fieldRect);
-    MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&fieldRect), 2);
-    int inset = scale(5);
-    RECT visual = {pad, pad, fieldRect.right + inset, bar - pad};
-    fillRect(dc, visual, theme_.fieldBackground);
-    frameRect(dc, visual, theme_.fieldBorder);
+        RECT fieldRect = {};
+        GetWindowRect(searchField_, &fieldRect);
+        MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&fieldRect), 2);
+        int inset = scale(5);
+        RECT visual = {pad, chromeTop + pad, fieldRect.right + inset, chromeTop + bar - pad};
+        fillRect(dc, visual, theme_.fieldBackground);
+        frameRect(dc, visual, theme_.fieldBorder);
+    }
+
+    chrome_.paintResizeGrip(dc, client);
 }
 
 void AppWindow::applyTheme() {
@@ -1234,10 +1593,10 @@ void AppWindow::applyTheme() {
     fieldBrush_ = CreateSolidBrush(theme_.fieldBackground);
     view_.setTheme(theme_);
     outline_.setTheme(theme_);
+    chrome_.setTheme(theme_);
     InvalidateRect(hwnd_, nullptr, TRUE);
     if (searchField_) InvalidateRect(searchField_, nullptr, TRUE);
     if (searchButton_) InvalidateRect(searchButton_, nullptr, TRUE);
-    DrawMenuBar(hwnd_);
 }
 
 void AppWindow::openFileDialog() {
@@ -1267,7 +1626,8 @@ void AppWindow::doSearch(bool forward) {
     GetWindowTextW(searchField_, buffer, ARRAYSIZE(buffer));
     std::wstring needle = buffer;
     if (needle.empty()) {
-        SetFocus(searchField_);
+        // Nothing to look for yet: reveal the bar and let the user type.
+        showSearch(true);
         return;
     }
     bool found = view_.findText(needle, forward);
@@ -1281,13 +1641,16 @@ void AppWindow::doSearch(bool forward) {
 
 void AppWindow::updateTitle() {
     const std::wstring& path = view_.filePath();
-    if (path.empty()) {
-        SetWindowTextW(hwnd_, kAppTitle);
-        return;
+    std::wstring title = kAppTitle;
+    if (!path.empty()) {
+        size_t slash = path.find_last_of(L"\\/");
+        std::wstring name = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+        title = name + L" - " + kAppTitle;
     }
-    size_t slash = path.find_last_of(L"\\/");
-    std::wstring name = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
-    SetWindowTextW(hwnd_, (name + L" - " + kAppTitle).c_str());
+    // The window text still drives the taskbar and Alt+Tab; the caption strip is
+    // drawn from the same string.
+    SetWindowTextW(hwnd_, title.c_str());
+    chrome_.setTitle(title);
 }
 
 } // namespace app

@@ -5,6 +5,7 @@
 #include "layout.h"
 #include "md_types.h"
 #include "search.h"
+#include "win_chrome.h"
 #include "win_outline.h"
 #include "win_settings.h"
 #include "win_text.h"
@@ -25,10 +26,20 @@ public:
 
     bool loadFile(const std::wstring& path);
     void showWelcome();
+    void reload();
     const std::wstring& filePath() const { return path_; }
 
     void setTheme(const Theme& theme);
     void setDpi(int dpi);
+
+    // Reading zoom, as a percentage of the theme's base font sizes.
+    int zoomPercent() const { return zoomPercent_; }
+    void setZoomPercent(int percent);
+    void adjustZoom(int delta);
+
+    // History navigation for in-document anchors and links to other files.
+    void goBack();
+    void goForward();
 
     bool hasSelection() const { return selectionStart() != selectionEnd(); }
     void copySelection() const;
@@ -49,6 +60,16 @@ private:
     void setDocument(std::string utf8, const std::wstring& path);
     void notifyParent(int command) const;
     void relayout();
+    void relayoutKeepingPosition();
+
+    void activateLink(const std::wstring& url);
+    bool jumpToAnchor(const std::wstring& anchor, bool recordHistory);
+    void navigateToFile(const std::wstring& path, const std::wstring& anchor);
+    void recordHistory();
+    void restoreHistory(const std::wstring& path, int scroll);
+    void rememberFileStamp();
+    bool fileChangedOnDisk() const;
+    int contentDpi() const { return MulDiv(dpi_, zoomPercent_, 100); }
     void onPaint();
     void paintContent(HDC dc, const RECT& client);
     void updateScrollBar();
@@ -60,7 +81,13 @@ private:
     size_t selectionStart() const { return selectionAnchor_ < selectionFocus_ ? selectionAnchor_ : selectionFocus_; }
     size_t selectionEnd() const { return selectionAnchor_ < selectionFocus_ ? selectionFocus_ : selectionAnchor_; }
     int clientHeight() const;
-    int scale(int value) const { return MulDiv(value, dpi_, 96); }
+    // Content scales with zoom; chrome does not.
+    int scale(int value) const { return MulDiv(value, contentDpi(), 96); }
+
+    struct HistoryEntry {
+        std::wstring path;
+        int scrollY = 0;
+    };
 
     HWND hwnd_ = nullptr;
     md::Document document_;
@@ -71,7 +98,14 @@ private:
     std::wstring path_;
 
     int dpi_ = 96;
+    int zoomPercent_ = 100;
     int scrollY_ = 0;
+
+    std::vector<HistoryEntry> back_;
+    std::vector<HistoryEntry> forward_;
+
+    FILETIME lastWriteTime_ = {0, 0};
+    unsigned long long lastFileSize_ = 0;
 
     size_t selectionAnchor_ = 0;
     size_t selectionFocus_ = 0;
@@ -102,6 +136,8 @@ private:
     void updateTitle();
     void refreshOutline();
     void persistWindowState();
+    // The search bar starts collapsed; the magnifier and Ctrl+F reveal it.
+    void showSearch(bool show);
     int barHeight() const;
     int gutter() const { return scale(10); }
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
@@ -110,6 +146,9 @@ private:
     HWND hwnd_ = nullptr;
     HWND searchField_ = nullptr;
     HWND searchButton_ = nullptr;
+    HMENU fileMenu_ = nullptr;
+    HMENU editMenu_ = nullptr;
+    HMENU aboutMenu_ = nullptr;
     HACCEL accelerators_ = nullptr;
     HFONT uiFont_ = nullptr;
     HFONT menuFont_ = nullptr;
@@ -117,9 +156,12 @@ private:
 
     DocumentView view_;
     OutlinePanel outline_;
+    WindowChrome chrome_;
     Theme theme_;
     int dpi_ = 96;
     bool startExpanded_ = false;
+    int startZoom_ = 100;
+    bool searchVisible_ = false;
     bool searchFailed_ = false;
     bool buttonHot_ = false;
     bool buttonPressed_ = false;

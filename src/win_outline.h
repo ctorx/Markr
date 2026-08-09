@@ -14,13 +14,18 @@ namespace app {
 
 class OutlinePanel {
 public:
+    OutlinePanel() = default;
+    ~OutlinePanel();
+
+    OutlinePanel(const OutlinePanel&) = delete;
+    OutlinePanel& operator=(const OutlinePanel&) = delete;
+
     static bool registerWindowClass(HINSTANCE instance);
 
     HWND create(HWND parent, HINSTANCE instance);
     HWND hwnd() const { return hwnd_; }
 
     void setTheme(const Theme& theme);
-    void setUiFont(HFONT font);
     void setDpi(int dpi);
 
     void setEntries(const std::vector<view::OutlineEntry>& entries);
@@ -43,17 +48,27 @@ private:
     void paint(HDC dc, const RECT& client);
     void drawChevron(HDC dc, const RECT& button, bool pointingRight) const;
     RECT buttonRect() const;
-    int itemHeight() const;
     int listTop() const;
     int hitTestItem(int x, int y) const;
     void clampScroll();
     int contentHeight() const;
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
 
+    // Headings are bucketed by depth: h1, h2, then everything deeper.
+    void rebuildFonts();
+    void destroyFonts();
+    static int levelBucket(int level);
+    int rowHeight(int level) const;
+    int rowTop(size_t index) const;
+
     HWND hwnd_ = nullptr;
     Theme theme_;
-    HFONT font_ = nullptr;
     int dpi_ = 96;
+
+    static const int kBuckets = 3;
+    HFONT levelFonts_[kBuckets] = {nullptr};
+    int levelHeights_[kBuckets] = {0};
+    HFONT titleFont_ = nullptr;
     bool expanded_ = false;
 
     std::vector<view::OutlineEntry> entries_;

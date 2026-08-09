@@ -1,5 +1,7 @@
 #include "layout.h"
 
+#include "highlight.h"
+
 #include <algorithm>
 #include <map>
 
@@ -100,6 +102,39 @@ struct InlineState {
     FontId base = FontId::Body;
 };
 
+ColorRole colorForToken(syntax::TokenType type) {
+    switch (type) {
+        case syntax::TokenType::Keyword: return ColorRole::CodeKeyword;
+        case syntax::TokenType::Type: return ColorRole::CodeType;
+        case syntax::TokenType::String: return ColorRole::CodeString;
+        case syntax::TokenType::Number: return ColorRole::CodeNumber;
+        case syntax::TokenType::Comment: return ColorRole::CodeComment;
+        case syntax::TokenType::Preprocessor: return ColorRole::CodeDirective;
+        case syntax::TokenType::Tag: return ColorRole::CodeTag;
+        case syntax::TokenType::Attribute: return ColorRole::CodeAttribute;
+        case syntax::TokenType::Function: return ColorRole::CodeFunction;
+        default: return ColorRole::CodeText;
+    }
+}
+
+// GitHub-compatible heading slug: lower-cased, punctuation dropped, spaces
+// hyphenated, duplicates suffixed.
+std::wstring slugify(const std::wstring& text) {
+    std::wstring slug;
+    for (wchar_t c : text) {
+        if (c >= L'A' && c <= L'Z') {
+            slug.push_back(static_cast<wchar_t>(c - L'A' + L'a'));
+        } else if ((c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || c == L'-' ||
+                   c == L'_' || c >= 128) {
+            slug.push_back(c);
+        } else if (c == L' ' || c == L'\t') {
+            if (!slug.empty() && slug.back() != L'-') slug.push_back(L'-');
+        }
+    }
+    while (!slug.empty() && slug.back() == L'-') slug.pop_back();
+    return slug;
+}
+
 FontId resolveFont(const InlineState& s) {
     if (s.code) return s.bold ? FontId::CodeBold : FontId::Code;
     switch (s.base) {
@@ -141,6 +176,7 @@ private:
     IImageSource* images_;
     Layout& out_;
     std::map<std::string, int> footnotes_;
+    std::map<std::wstring, int> slugCounts_;
 
     int left_ = 0;
     int right_ = 0;
@@ -481,10 +517,26 @@ private:
 
     // ----------------------------------------------------------- block tree
 
+    // Extra breathing room above a heading, so sections read as separate. The
+    // deeper the heading, the tighter it binds to what follows.
+    int spaceAboveHeading(int level) const {
+        switch (level) {
+            case 1: return met_.sectionSpacing * 3 / 2;
+            case 2: return met_.sectionSpacing;
+            case 3: return met_.sectionSpacing / 2;
+            default: return met_.sectionSpacing / 4;
+        }
+    }
+
     void layoutChildren(const md::Node& node, int left, int right) {
         bool first = true;
         for (const md::NodePtr& child : node.children) {
-            if (!first) y_ += met_.blockSpacing;
+            if (!first) {
+                y_ += met_.blockSpacing;
+                if (child->type == md::NodeType::Heading) {
+                    y_ += spaceAboveHeading(std::min(6, std::max(1, child->level)));
+                }
+            }
             layoutBlock(*child, left, right);
             first = false;
         }
@@ -553,6 +605,11 @@ private:
         std::string plain;
         collectPlainText(node, plain);
         entry.text = toWide(plain);
+
+        std::wstring slug = slugify(entry.text);
+        int& seen = slugCounts_[slug];
+        entry.anchor = (seen == 0) ? slug : slug + L"-" + std::to_wstring(seen);
+        ++seen;
         out_.outline.push_back(entry);
 
         InlineState state;
@@ -565,7 +622,7 @@ private:
         endFlow(true);
 
         if (level <= 2) {
-            y_ += met_.blockSpacing / 3;
+            y_ += met_.headingRuleGap;
             Decoration d;
             d.type = DecorationType::Rule;
             d.x = left;
@@ -575,6 +632,9 @@ private:
             d.color = ColorRole::Rule;
             out_.decorations.push_back(d);
             y_ += d.height;
+            // Keep the next block clear of the rule; a top-level section gets
+            // the wider gap.
+            y_ += (level == 1) ? met_.headingRuleSpacing : met_.headingRuleSpacing / 2;
         }
     }
 
@@ -593,18 +653,46 @@ private:
         style.font = FontId::Code;
         style.color = textColor;
 
-        std::wstring text = toWide(node.text);
-        size_t start = 0;
+        // Tokens carry byte offsets into node.text, so lines are walked in UTF-8
+        // and each segment converted as it is emitted.
+        std::vector<syntax::Token> tokens;
+        if (textColor == ColorRole::CodeText) {
+            syntax::Language language = syntax::languageFromInfo(node.info);
+            if (language != syntax::Language::None) {
+                tokens = syntax::tokenize(language, node.text);
+            }
+        }
+
+        size_t tokenIndex = 0;
+        size_t lineStart = 0;
         while (true) {
-            size_t nl = text.find(L'\n', start);
-            std::wstring line =
-                text.substr(start, nl == std::wstring::npos ? std::wstring::npos : nl - start);
+            size_t nl = node.text.find('\n', lineStart);
+            size_t lineEnd = (nl == std::string::npos) ? node.text.size() : nl;
+
             beginFlow(left + met_.codePadding, right - met_.codePadding, md::Align::None,
                       FontId::Code);
-            addText(line, style);
+            if (tokens.empty()) {
+                addText(toWide(node.text.substr(lineStart, lineEnd - lineStart)), style);
+            } else {
+                while (tokenIndex < tokens.size() &&
+                       tokens[tokenIndex].start + tokens[tokenIndex].length <= lineStart) {
+                    ++tokenIndex;
+                }
+                for (size_t t = tokenIndex; t < tokens.size(); ++t) {
+                    const syntax::Token& token = tokens[t];
+                    if (token.start >= lineEnd) break;
+                    size_t from = std::max(token.start, lineStart);
+                    size_t to = std::min(token.start + token.length, lineEnd);
+                    if (to <= from) continue;
+                    Style tokenStyle = style;
+                    tokenStyle.color = colorForToken(token.type);
+                    addText(toWide(node.text.substr(from, to - from)), tokenStyle);
+                }
+            }
             endFlow(true);
-            if (nl == std::wstring::npos) break;
-            start = nl + 1;
+
+            if (nl == std::string::npos) break;
+            lineStart = nl + 1;
         }
 
         y_ += met_.codePadding;
@@ -920,6 +1008,23 @@ size_t indexAtPoint(const Layout& layout, int x, int y) {
         return r.textStart + bestChar;
     }
     return layout.runs[last].textStart + layout.runs[last].text.size();
+}
+
+int outlineIndexForAnchor(const Layout& layout, const std::wstring& anchor) {
+    auto fold = [](const std::wstring& value) {
+        std::wstring out;
+        out.reserve(value.size());
+        for (wchar_t c : value) {
+            out.push_back((c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c);
+        }
+        return out;
+    };
+
+    std::wstring wanted = fold(anchor);
+    for (size_t i = 0; i < layout.outline.size(); ++i) {
+        if (fold(layout.outline[i].anchor) == wanted) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 int linkAtPoint(const Layout& layout, int x, int y) {

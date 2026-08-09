@@ -25,7 +25,15 @@ view::Metrics stubMetrics() {
     m.quoteBarWidth = 4;
     m.codePadding = 10;
     m.cellPadding = 10;
+    m.headingRuleGap = 8;
+    m.headingRuleSpacing = 14;
+    m.sectionSpacing = 18;
     return m;
+}
+
+// Vertical gap between the bottom of run `a` and the top of run `b`.
+int gapBetweenRuns(const view::Layout& l, size_t a, size_t b) {
+    return l.runs[b].y - (l.runs[a].y + l.runs[a].height);
 }
 
 view::Layout lay(const std::string& markdown, int width) {
@@ -137,10 +145,102 @@ TEST(Layout, CodeBlockGetsBackgroundAndCodeFont) {
     CHECK_TRUE(hasBg);
 }
 
+TEST(Highlighting, CodeBlockWithLanguageIsColoured) {
+    view::Layout l = lay("```cs\nint x = 1;\n```", 400);
+    bool type = false, number = false;
+    for (const view::Run& r : l.runs) {
+        if (r.text == std::wstring(L"int") && r.style.color == view::ColorRole::CodeType)
+            type = true;
+        if (r.text == std::wstring(L"1") && r.style.color == view::ColorRole::CodeNumber)
+            number = true;
+        CHECK_TRUE(r.style.font == view::FontId::Code);
+    }
+    CHECK_TRUE(type);
+    CHECK_TRUE(number);
+}
+
+TEST(Highlighting, CodeBlockWithoutLanguageStaysPlain) {
+    view::Layout l = lay("```\nint x = 1;\n```", 400);
+    CHECK_EQ(l.runs.size(), size_t(1));
+    CHECK_TRUE(l.runs[0].style.color == view::ColorRole::CodeText);
+}
+
+TEST(Highlighting, UnknownLanguageStaysPlain) {
+    view::Layout l = lay("```brainfuck\nint x = 1;\n```", 400);
+    CHECK_EQ(l.runs.size(), size_t(1));
+}
+
+TEST(Highlighting, DoesNotChangeTheDocumentText) {
+    view::Layout plain = lay("```\nint x = 1;\n```", 400);
+    view::Layout coloured = lay("```cs\nint x = 1;\n```", 400);
+    CHECK_EQ(coloured.text, plain.text);
+    CHECK_EQ(coloured.text, std::wstring(L"int x = 1;\n"));
+}
+
+TEST(Highlighting, MultiLineStringsKeepTheirColourOnEveryLine) {
+    view::Layout l = lay("```pgsql\nAS $$\nBEGIN\nEND;\n$$ LANGUAGE plpgsql\n```", 400);
+    for (const view::Run& r : l.runs) {
+        if (r.text == std::wstring(L"BEGIN")) {
+            CHECK_TRUE(r.style.color == view::ColorRole::CodeString);
+        }
+        if (r.text == std::wstring(L"AS")) {
+            CHECK_TRUE(r.style.color == view::ColorRole::CodeKeyword);
+        }
+    }
+}
+
+TEST(Highlighting, MultiLineCommentsSpanLines) {
+    view::Layout l = lay("```cs\n/* a\nb */\nint x;\n```", 400);
+    int commentRuns = 0;
+    for (const view::Run& r : l.runs) {
+        if (r.style.color == view::ColorRole::CodeComment) ++commentRuns;
+    }
+    CHECK_EQ(commentRuns, 2);
+}
+
 TEST(Layout, CodeBlockLongLineWrapsInsteadOfOverflowing) {
     view::Layout l = lay("```\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```", 300);
     CHECK_TRUE(maxRight(l) <= 280);
     CHECK_TRUE(distinctLines(l) >= 2);
+}
+
+TEST(Spacing, HeadingRuleSitsBelowTheTextWithBreathingRoom) {
+    view::Layout l = lay("# Title", 400);
+    CHECK_EQ(l.decorations.size(), size_t(1));
+    CHECK_EQ(l.decorations[0].y - (l.runs[0].y + l.runs[0].height), 8);
+}
+
+TEST(Spacing, ContentClearsTheHeadingRule) {
+    view::Layout afterH1 = lay("# A\n\ntext", 400);
+    view::Layout afterH2 = lay("## A\n\ntext", 400);
+
+    int h1Gap = afterH1.runs[1].y - (afterH1.decorations[0].y + afterH1.decorations[0].height);
+    int h2Gap = afterH2.runs[1].y - (afterH2.decorations[0].y + afterH2.decorations[0].height);
+    // Both clear the rule, and a top-level section gets the wider gap.
+    CHECK_TRUE(h2Gap > 10);
+    CHECK_TRUE(h1Gap > h2Gap);
+}
+
+TEST(Spacing, SectionHeadingsGetExtraSpaceAbove) {
+    int paragraphGap = gapBetweenRuns(lay("a\n\nb", 400), 0, 1);
+    int sectionGap = gapBetweenRuns(lay("a\n\n## b", 400), 0, 1);
+    CHECK_EQ(paragraphGap, 10);
+    CHECK_EQ(sectionGap - paragraphGap, 18);
+}
+
+TEST(Spacing, SpaceAboveHeadingsShrinksWithDepth) {
+    int h1 = gapBetweenRuns(lay("a\n\n# b", 400), 0, 1);
+    int h2 = gapBetweenRuns(lay("a\n\n## b", 400), 0, 1);
+    int h3 = gapBetweenRuns(lay("a\n\n### b", 400), 0, 1);
+    int h4 = gapBetweenRuns(lay("a\n\n#### b", 400), 0, 1);
+    CHECK_TRUE(h1 > h2);
+    CHECK_TRUE(h2 > h3);
+    CHECK_TRUE(h3 >= h4);
+}
+
+TEST(Spacing, NoExtraSpaceAboveAHeadingThatOpensTheDocument) {
+    view::Layout l = lay("# Title", 400);
+    CHECK_EQ(l.runs[0].y, 20);
 }
 
 TEST(Layout, ThematicBreakEmitsRule) {
@@ -274,6 +374,22 @@ TEST(Outline, EntryPointsAtTheHeadingBlock) {
     CHECK_EQ(l.outline.size(), size_t(1));
     // The recorded offset is the top of the heading block, above its first run.
     CHECK_TRUE(l.outline[0].y <= l.runs[1].y);
+}
+
+TEST(Outline, GeneratesGitHubStyleAnchors) {
+    view::Layout l = lay("# Hello World\n\n## API: Reference!\n\n### Hello World", 400);
+    CHECK_EQ(l.outline.size(), size_t(3));
+    CHECK_EQ(l.outline[0].anchor, std::wstring(L"hello-world"));
+    CHECK_EQ(l.outline[1].anchor, std::wstring(L"api-reference"));
+    // Repeated headings get the numeric suffix GitHub uses.
+    CHECK_EQ(l.outline[2].anchor, std::wstring(L"hello-world-1"));
+}
+
+TEST(Outline, AnchorLookupIsCaseInsensitive) {
+    view::Layout l = lay("# Getting Started", 400);
+    CHECK_EQ(view::outlineIndexForAnchor(l, L"getting-started"), 0);
+    CHECK_EQ(view::outlineIndexForAnchor(l, L"Getting-Started"), 0);
+    CHECK_EQ(view::outlineIndexForAnchor(l, L"missing"), -1);
 }
 
 TEST(Outline, IgnoresEverythingThatIsNotAHeading) {

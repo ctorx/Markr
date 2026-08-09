@@ -34,7 +34,10 @@ WindowState loadWindowState() {
         return state;
     }
 
-    DWORD left = 0, top = 0, width = 0, height = 0, maximized = 0, outline = 0;
+    DWORD left = 0, top = 0, width = 0, height = 0, maximized = 0, outline = 0, zoom = 0;
+    if (readDword(key, L"ZoomPercent", &zoom) && zoom >= 50 && zoom <= 300) {
+        state.zoomPercent = static_cast<int>(zoom);
+    }
     bool haveAll = readDword(key, L"WindowLeft", &left) && readDword(key, L"WindowTop", &top) &&
                    readDword(key, L"WindowWidth", &width) &&
                    readDword(key, L"WindowHeight", &height);
@@ -66,6 +69,7 @@ void saveWindowState(const WindowState& state) {
     writeDword(key, L"WindowHeight", static_cast<DWORD>(state.bounds.bottom - state.bounds.top));
     writeDword(key, L"WindowMaximized", state.maximized ? 1 : 0);
     writeDword(key, L"OutlineExpanded", state.outlineExpanded ? 1 : 0);
+    writeDword(key, L"ZoomPercent", static_cast<DWORD>(state.zoomPercent));
     RegCloseKey(key);
 }
 

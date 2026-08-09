@@ -13,6 +13,23 @@ constexpr int kPadding = 10;
 constexpr int kButtonSize = 28;
 constexpr int kExpandedWidth = 280;
 constexpr int kIndentPerLevel = 14;
+// Indentation stops growing past this depth so deep headings keep their width.
+constexpr int kMaxIndentLevel = 4;
+
+// Point size (in tenths) and weight per depth bucket: h1, h2, h3 and deeper.
+struct LevelFontSpec {
+    int pointsTimesTen;
+    int weight;
+};
+
+const LevelFontSpec kLevelFonts[3] = {
+    {120, FW_SEMIBOLD}, // h1
+    {110, FW_NORMAL},   // h2
+    {100, FW_NORMAL},   // h3+
+};
+
+// Vertical padding added to the font height for each bucket's row.
+const int kRowPadding[3] = {14, 10, 8};
 
 void fillRect(HDC dc, const RECT& rect, COLORREF color) {
     SetDCBrushColor(dc, color);
@@ -20,6 +37,70 @@ void fillRect(HDC dc, const RECT& rect, COLORREF color) {
 }
 
 } // namespace
+
+OutlinePanel::~OutlinePanel() { destroyFonts(); }
+
+void OutlinePanel::destroyFonts() {
+    for (int i = 0; i < kBuckets; ++i) {
+        if (levelFonts_[i]) {
+            DeleteObject(levelFonts_[i]);
+            levelFonts_[i] = nullptr;
+        }
+    }
+    if (titleFont_) {
+        DeleteObject(titleFont_);
+        titleFont_ = nullptr;
+    }
+}
+
+void OutlinePanel::rebuildFonts() {
+    destroyFonts();
+
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+
+    auto makeFont = [&](int pointsTimesTen, int weight) {
+        LOGFONTW lf = {};
+        lf.lfHeight = -MulDiv(pointsTimesTen, dpi_, 720);
+        lf.lfWeight = weight;
+        lf.lfCharSet = DEFAULT_CHARSET;
+        lf.lfQuality = CLEARTYPE_QUALITY;
+        wcsncpy_s(lf.lfFaceName, L"Segoe UI", _TRUNCATE);
+        return CreateFontIndirectW(&lf);
+    };
+
+    for (int i = 0; i < kBuckets; ++i) {
+        levelFonts_[i] = makeFont(kLevelFonts[i].pointsTimesTen, kLevelFonts[i].weight);
+        HGDIOBJ previous = SelectObject(dc, levelFonts_[i]);
+        TEXTMETRICW tm = {};
+        GetTextMetricsW(dc, &tm);
+        levelHeights_[i] = tm.tmHeight;
+        SelectObject(dc, previous);
+    }
+    titleFont_ = makeFont(95, FW_SEMIBOLD);
+
+    DeleteDC(dc);
+}
+
+int OutlinePanel::levelBucket(int level) {
+    if (level <= 1) return 0;
+    if (level == 2) return 1;
+    return 2;
+}
+
+int OutlinePanel::rowHeight(int level) const {
+    int bucket = levelBucket(level);
+    return levelHeights_[bucket] + scale(kRowPadding[bucket]);
+}
+
+int OutlinePanel::rowTop(size_t index) const {
+    int top = 0;
+    for (size_t i = 0; i < index && i < entries_.size(); ++i) {
+        top += rowHeight(entries_[i].level);
+    }
+    return top;
+}
 
 bool OutlinePanel::registerWindowClass(HINSTANCE instance) {
     WNDCLASSEXW wc = {};
@@ -35,6 +116,7 @@ bool OutlinePanel::registerWindowClass(HINSTANCE instance) {
 HWND OutlinePanel::create(HWND parent, HINSTANCE instance) {
     hwnd_ = CreateWindowExW(0, kOutlineClass, nullptr, WS_CHILD | WS_VISIBLE, 0, 0, 10, 10,
                             parent, nullptr, instance, this);
+    rebuildFonts();
     return hwnd_;
 }
 
@@ -57,13 +139,9 @@ void OutlinePanel::setTheme(const Theme& theme) {
     if (hwnd_) InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
-void OutlinePanel::setUiFont(HFONT font) {
-    font_ = font;
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, TRUE);
-}
-
 void OutlinePanel::setDpi(int dpi) {
     dpi_ = dpi > 0 ? dpi : 96;
+    rebuildFonts();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -103,18 +181,12 @@ RECT OutlinePanel::buttonRect() const {
     return RECT{pad, pad, pad + size, pad + size};
 }
 
-int OutlinePanel::itemHeight() const {
-    return scale(kButtonSize) - scale(4);
-}
-
 int OutlinePanel::listTop() const {
     RECT button = buttonRect();
     return button.bottom + scale(kPadding);
 }
 
-int OutlinePanel::contentHeight() const {
-    return static_cast<int>(entries_.size()) * itemHeight();
-}
+int OutlinePanel::contentHeight() const { return rowTop(entries_.size()); }
 
 void OutlinePanel::clampScroll() {
     RECT client = {};
@@ -131,9 +203,16 @@ int OutlinePanel::hitTestItem(int x, int y) const {
     if (x < 0 || x > client.right) return -1;
     int top = listTop();
     if (y < top || y > client.bottom - scale(kPadding)) return -1;
-    int index = (y - top + scrollY_) / itemHeight();
-    if (index < 0 || index >= static_cast<int>(entries_.size())) return -1;
-    return index;
+
+    int offset = y - top + scrollY_;
+    if (offset < 0) return -1;
+    int cursor = 0;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        int height = rowHeight(entries_[i].level);
+        if (offset < cursor + height) return static_cast<int>(i);
+        cursor += height;
+    }
+    return -1;
 }
 
 LRESULT OutlinePanel::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -208,7 +287,7 @@ LRESULT OutlinePanel::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
         case WM_MOUSEWHEEL: {
             if (!expanded_) return 0;
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            scrollY_ -= delta * itemHeight() * 3 / WHEEL_DELTA;
+            scrollY_ -= delta * rowHeight(2) * 3 / WHEEL_DELTA;
             clampScroll();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
@@ -264,7 +343,7 @@ void OutlinePanel::paint(HDC dc, const RECT& client) {
     drawChevron(dc, button, !expanded_);
 
     SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ previousFont = font_ ? SelectObject(dc, font_) : nullptr;
+    HGDIOBJ previousFont = titleFont_ ? SelectObject(dc, titleFont_) : nullptr;
 
     if (expanded_) {
         RECT title = {button.right + scale(kPadding), button.top, client.right - scale(kPadding),
@@ -281,7 +360,7 @@ void OutlinePanel::paint(HDC dc, const RECT& client) {
 
         if (entries_.empty()) {
             RECT empty = {scale(kPadding), top, client.right - scale(kPadding),
-                          top + itemHeight()};
+                          top + rowHeight(2)};
             SetTextColor(dc, theme_.role(view::ColorRole::Muted));
             DrawTextW(dc, L"No headings", -1, &empty,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -289,11 +368,13 @@ void OutlinePanel::paint(HDC dc, const RECT& client) {
 
         int bottomLimit = client.bottom - scale(kPadding);
         for (size_t i = 0; i < entries_.size(); ++i) {
-            int y = top + static_cast<int>(i) * itemHeight() - scrollY_;
-            if (y + itemHeight() < top || y > bottomLimit) continue;
+            const view::OutlineEntry& entry = entries_[i];
+            int bucket = levelBucket(entry.level);
+            int height = rowHeight(entry.level);
+            int y = top + rowTop(i) - scrollY_;
+            if (y + height < top || y > bottomLimit) continue;
 
-            RECT row = {scale(kPadding) / 2, y, client.right - scale(kPadding) / 2,
-                        y + itemHeight()};
+            RECT row = {scale(kPadding) / 2, y, client.right - scale(kPadding) / 2, y + height};
             bool active = static_cast<int>(i) == activeIndex_;
             if (static_cast<int>(i) == hotItem_) {
                 fillRect(dc, row, theme_.buttonHot);
@@ -302,15 +383,21 @@ void OutlinePanel::paint(HDC dc, const RECT& client) {
             }
             if (active) {
                 RECT marker = {row.left, y + scale(3), row.left + std::max(2, scale(3)),
-                               y + itemHeight() - scale(3)};
+                               y + height - scale(3)};
                 fillRect(dc, marker, theme_.role(view::ColorRole::Link));
             }
 
-            int indent = scale(kPadding) + (entries_[i].level - 1) * scale(kIndentPerLevel);
-            RECT text = {indent, y, client.right - scale(kPadding), y + itemHeight()};
-            SetTextColor(dc, active ? theme_.role(view::ColorRole::Link)
-                                    : theme_.role(view::ColorRole::Text));
-            DrawTextW(dc, entries_[i].text.c_str(), -1, &text,
+            int indentLevel = std::min(entry.level, kMaxIndentLevel) - 1;
+            int indent = scale(kPadding) + indentLevel * scale(kIndentPerLevel);
+            RECT text = {indent, y, client.right - scale(kPadding), y + height};
+
+            COLORREF color = theme_.role(view::ColorRole::Text);
+            if (active) color = theme_.role(view::ColorRole::Link);
+            else if (bucket == 2) color = theme_.role(view::ColorRole::Muted);
+            SetTextColor(dc, color);
+
+            SelectObject(dc, levelFonts_[bucket]);
+            DrawTextW(dc, entry.text.c_str(), -1, &text,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
     }
