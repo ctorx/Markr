@@ -46,6 +46,7 @@ $sources = @(
     'src\win_theme.cpp',
     'src\win_text.cpp',
     'src\layout.cpp',
+    'src\md_export.cpp',
     'src\search.cpp',
     'src\highlight.cpp',
     'src\md_parser.cpp'

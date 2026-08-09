@@ -19,6 +19,7 @@ $sources = @(
     'src\md_parser.cpp',
     'src\md_debug.cpp',
     'src\layout.cpp',
+    'src\md_export.cpp',
     'src\search.cpp',
     'src\highlight.cpp'
 ) | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ }

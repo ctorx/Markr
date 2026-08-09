@@ -5,6 +5,7 @@
 
 #include "md_types.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -125,6 +126,13 @@ struct OutlineEntry {
     int y = 0; // top of the heading block in document coordinates
 };
 
+// Half-open range of Layout::text. Blocks that render no text (thematic rules,
+// images) have start == end at the position they occupy.
+struct TextRange {
+    size_t start = 0;
+    size_t end = 0;
+};
+
 struct IMeasurer;
 
 struct Layout {
@@ -134,6 +142,9 @@ struct Layout {
     std::vector<LinkTarget> links;
     std::vector<ImageRef> images;
     std::vector<OutlineEntry> outline;
+    // Where each document node landed in `text`. Lets a selection be mapped back
+    // onto the markdown tree, which is what copying markdown or HTML needs.
+    std::map<const md::Node*, TextRange> nodeRanges;
     int width = 0;
     int contentHeight = 0;
     const IMeasurer* measurer = nullptr; // kept for hit testing

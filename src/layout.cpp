@@ -200,6 +200,20 @@ private:
     int pendingWidth_ = 0;
     bool pendingActive_ = false;
 
+    // -------------------------------------------------------- source mapping
+
+    // Position in the document text, counting the run still being assembled.
+    size_t textPos() const {
+        return out_.text.size() + (pendingActive_ ? pendingText_.size() : 0);
+    }
+
+    void recordRange(const md::Node& node, size_t start) {
+        TextRange range;
+        range.start = start;
+        range.end = textPos();
+        out_.nodeRanges[&node] = range;
+    }
+
     // ------------------------------------------------------------- flowing
 
     void beginFlow(int left, int right, md::Align align, FontId defaultFont) {
@@ -397,6 +411,7 @@ private:
         for (const md::NodePtr& childPtr : node.children) {
             const md::Node& child = *childPtr;
             InlineState next = state;
+            size_t childStart = textPos();
             switch (child.type) {
                 case md::NodeType::Text:
                     state.style.font = resolveFont(state);
@@ -479,6 +494,7 @@ private:
                     emitInlines(child, next);
                     break;
             }
+            recordRange(child, childStart);
         }
     }
 
@@ -543,6 +559,12 @@ private:
     }
 
     void layoutBlock(const md::Node& node, int left, int right) {
+        size_t blockStart = textPos();
+        layoutBlockBody(node, left, right);
+        recordRange(node, blockStart);
+    }
+
+    void layoutBlockBody(const md::Node& node, int left, int right) {
         switch (node.type) {
             case md::NodeType::Paragraph: {
                 InlineState state;
@@ -746,6 +768,7 @@ private:
             const md::Node& item = *itemPtr;
             if (!first) y_ += node.tight ? met_.blockSpacing / 3 : met_.blockSpacing;
             first = false;
+            size_t itemStart = textPos();
 
             if (item.taskState >= 0) {
                 Decoration box;
@@ -767,9 +790,10 @@ private:
 
             if (item.children.empty()) {
                 y_ += m_.lineHeight(FontId::Body);
-                continue;
+            } else {
+                layoutChildren(item, contentLeft, right);
             }
-            layoutChildren(item, contentLeft, right);
+            recordRange(item, itemStart);
         }
     }
 
@@ -889,6 +913,7 @@ private:
             int rowTop = y_;
             int rowBottom = y_;
             int cellX = left;
+            size_t rowStart = textPos();
 
             std::vector<int> cellLefts;
             for (size_t c = 0; c < columns; ++c) {
@@ -897,6 +922,7 @@ private:
                     c < row.children.size() ? row.children[c].get() : nullptr;
 
                 y_ = rowTop + met_.cellPadding;
+                size_t cellStart = textPos();
                 InlineState state;
                 state.bold = row.headerRow;
                 beginFlow(cellX + met_.cellPadding, cellX + widths[c] - met_.cellPadding,
@@ -904,10 +930,12 @@ private:
                           FontId::Body);
                 if (cell) emitInlines(*cell, state);
                 endFlow(false);
+                if (cell) recordRange(*cell, cellStart);
                 out_.text += (c + 1 == columns) ? L'\n' : L'\t';
                 rowBottom = std::max(rowBottom, y_);
                 cellX += widths[c];
             }
+            recordRange(row, rowStart);
 
             int rowHeight = rowBottom + met_.cellPadding - rowTop;
             if (row.headerRow) {

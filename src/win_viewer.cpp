@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <cstdio>
+#include <cstring>
 #include <cwctype>
 #include <shellapi.h>
 #include <shlwapi.h>
@@ -35,6 +37,13 @@ enum Command {
     ID_ZOOM_IN,
     ID_ZOOM_OUT,
     ID_ZOOM_RESET,
+};
+
+// Commands on the document's own right-click menu. They stay local to the view:
+// the menu is tracked with TPM_RETURNCMD, so they never reach a message loop.
+enum SelectionMenuCommand {
+    ID_COPY_MARKDOWN = 1,
+    ID_COPY_FORMATTED,
 };
 
 // Polls the open document for external edits.
@@ -117,6 +126,75 @@ std::string readFileUtf8(const std::wstring& path, bool* ok) {
     return bytes;
 }
 
+std::wstring toCrlf(const std::wstring& text) {
+    std::wstring out;
+    out.reserve(text.size() + 16);
+    for (wchar_t c : text) {
+        if (c == L'\n') out += L"\r\n";
+        else out.push_back(c);
+    }
+    return out;
+}
+
+HGLOBAL globalCopy(const void* data, size_t bytes) {
+    HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!handle) return nullptr;
+    void* target = GlobalLock(handle);
+    if (!target) {
+        GlobalFree(handle);
+        return nullptr;
+    }
+    memcpy(target, data, bytes);
+    GlobalUnlock(handle);
+    return handle;
+}
+
+// Wraps an HTML fragment in the CF_HTML descriptor, whose byte offsets point at
+// the fragment inside the finished buffer.
+std::string makeClipboardHtml(const std::string& fragment) {
+    const char* const kOpen = "<html>\r\n<body>\r\n<!--StartFragment-->";
+    const char* const kClose = "<!--EndFragment-->\r\n</body>\r\n</html>";
+    const char* const kHeaderFormat =
+        "Version:0.9\r\nStartHTML:%010u\r\nEndHTML:%010u\r\n"
+        "StartFragment:%010u\r\nEndFragment:%010u\r\n";
+
+    char header[256] = {0};
+    // The offsets are fixed-width, so the header written with zeros is exactly as
+    // long as the final one.
+    int headerLength = snprintf(header, sizeof(header), kHeaderFormat, 0u, 0u, 0u, 0u);
+    if (headerLength <= 0) return std::string();
+
+    unsigned startHtml = static_cast<unsigned>(headerLength);
+    unsigned startFragment = startHtml + static_cast<unsigned>(strlen(kOpen));
+    unsigned endFragment = startFragment + static_cast<unsigned>(fragment.size());
+    unsigned endHtml = endFragment + static_cast<unsigned>(strlen(kClose));
+    snprintf(header, sizeof(header), kHeaderFormat, startHtml, endHtml, startFragment,
+             endFragment);
+
+    return std::string(header) + kOpen + fragment + kClose;
+}
+
+// Puts the selection on the clipboard as text, optionally with an HTML flavour
+// alongside it for applications that accept rich text.
+void setClipboard(HWND owner, const std::wstring& text, const std::wstring* html) {
+    std::wstring plain = toCrlf(text);
+    if (!OpenClipboard(owner)) return;
+    EmptyClipboard();
+
+    HGLOBAL unicode = globalCopy(plain.c_str(), (plain.size() + 1) * sizeof(wchar_t));
+    if (unicode && !SetClipboardData(CF_UNICODETEXT, unicode)) GlobalFree(unicode);
+
+    if (html && !html->empty()) {
+        static const UINT htmlFormat = RegisterClipboardFormatW(L"HTML Format");
+        std::string buffer = makeClipboardHtml(view::toUtf8(*html));
+        if (htmlFormat && !buffer.empty()) {
+            HGLOBAL handle = globalCopy(buffer.c_str(), buffer.size() + 1);
+            if (handle && !SetClipboardData(htmlFormat, handle)) GlobalFree(handle);
+        }
+    }
+    CloseClipboard();
+}
+
 bool hasUriScheme(const std::wstring& url) {
     size_t colon = url.find(L':');
     if (colon == std::wstring::npos || colon < 2) return false; // "C:\..." is a path
@@ -171,6 +249,7 @@ const char* const kWelcomeDocument =
     "- Press **Enter** or the **Search** button to find; `Esc` closes the box\n"
     "- `F3` finds the next match, `Shift+F3` the previous one\n"
     "- Select text with the mouse, then **Edit -> Copy** (`Ctrl+C`)\n"
+    "- Right-click a selection for **Copy Markdown** or **Copy Formatted**\n"
     "- `F5` reloads; edits made in another editor are picked up automatically\n"
     "- `Ctrl+scroll` or `Ctrl+plus` / `Ctrl+minus` zooms, `Ctrl+0` resets\n"
     "- Links to headings and to other Markdown files work; `Alt+Left` goes back\n"
@@ -383,6 +462,23 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                     }
                 }
             }
+            return 0;
+        }
+
+        case WM_RBUTTONDOWN:
+            // Keep the selection: the menu acts on it. Focus follows the click so
+            // Ctrl+C still lands here afterwards.
+            SetFocus(hwnd_);
+            return 0;
+
+        case WM_CONTEXTMENU: {
+            if (reinterpret_cast<HWND>(wParam) != hwnd_) break;
+            // Nothing selected, nothing to copy: no menu at all.
+            if (!hasSelection()) return 0;
+            POINT where = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            // -1 means the keyboard asked for it (Shift+F10 or the menu key).
+            if (lParam == static_cast<LPARAM>(-1)) where = selectionMenuPoint();
+            showSelectionMenu(where.x, where.y);
             return 0;
         }
 
@@ -736,29 +832,61 @@ void DocumentView::selectWordAt(size_t index) {
 void DocumentView::copySelection() const {
     std::wstring text = view::extractText(layout_, selectionStart(), selectionEnd());
     if (text.empty()) return;
+    setClipboard(hwnd_, text, nullptr);
+}
 
-    std::wstring crlf;
-    crlf.reserve(text.size() + 16);
-    for (wchar_t c : text) {
-        if (c == L'\n') crlf += L"\r\n";
-        else crlf.push_back(c);
-    }
+void DocumentView::copySelectionMarkdown() const {
+    std::wstring markdown =
+        view::selectionMarkdown(document_, layout_, selectionStart(), selectionEnd());
+    if (markdown.empty()) return;
+    setClipboard(hwnd_, markdown, nullptr);
+}
 
-    if (!OpenClipboard(hwnd_)) return;
-    EmptyClipboard();
-    size_t bytes = (crlf.size() + 1) * sizeof(wchar_t);
-    HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (handle) {
-        void* target = GlobalLock(handle);
-        if (target) {
-            memcpy(target, crlf.c_str(), bytes);
-            GlobalUnlock(handle);
-            SetClipboardData(CF_UNICODETEXT, handle);
-        } else {
-            GlobalFree(handle);
+void DocumentView::copySelectionFormatted() const {
+    std::wstring html =
+        view::selectionHtml(document_, layout_, selectionStart(), selectionEnd());
+    if (html.empty()) return;
+    // The plain flavour is what applications that ignore HTML will paste.
+    std::wstring text = view::extractText(layout_, selectionStart(), selectionEnd());
+    setClipboard(hwnd_, text, &html);
+}
+
+POINT DocumentView::selectionMenuPoint() const {
+    RECT client = {};
+    GetClientRect(hwnd_, &client);
+    POINT point = {client.left + (client.right - client.left) / 4,
+                   client.top + (client.bottom - client.top) / 4};
+
+    std::vector<view::Rect> rects;
+    view::selectionRects(layout_, selectionStart(), selectionEnd(), rects);
+    if (!rects.empty()) {
+        const view::Rect& first = rects.front();
+        int y = first.y + first.height - scrollY_;
+        // Only follow the selection while it is on screen.
+        if (y >= client.top && y <= client.bottom) {
+            point.x = first.x;
+            point.y = y;
         }
     }
-    CloseClipboard();
+    ClientToScreen(hwnd_, &point);
+    return point;
+}
+
+void DocumentView::showSelectionMenu(int screenX, int screenY) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, ID_COPY_MARKDOWN, L"Copy &Markdown");
+    AppendMenuW(menu, MF_STRING, ID_COPY_FORMATTED, L"Copy &Formatted");
+
+    SetFocus(hwnd_);
+    int choice = TrackPopupMenuEx(menu,
+                                  TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN |
+                                      TPM_RIGHTBUTTON,
+                                  screenX, screenY, hwnd_, nullptr);
+    DestroyMenu(menu);
+
+    if (choice == ID_COPY_MARKDOWN) copySelectionMarkdown();
+    else if (choice == ID_COPY_FORMATTED) copySelectionFormatted();
 }
 
 bool DocumentView::findText(const std::wstring& needle, bool forward) {

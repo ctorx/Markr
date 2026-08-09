@@ -3,6 +3,7 @@
 #pragma once
 
 #include "layout.h"
+#include "md_export.h"
 #include "md_types.h"
 #include "search.h"
 #include "win_chrome.h"
@@ -43,6 +44,10 @@ public:
 
     bool hasSelection() const { return selectionStart() != selectionEnd(); }
     void copySelection() const;
+    // Right-click alternatives: the markdown behind the selection, or the
+    // selection as rich text for editors that accept it.
+    void copySelectionMarkdown() const;
+    void copySelectionFormatted() const;
 
     // Document outline, for the navigation panel.
     const std::vector<view::OutlineEntry>& outline() const { return layout_.outline; }
@@ -78,6 +83,10 @@ private:
     void ensureRangeVisible(size_t from, size_t to);
     size_t hitTest(int x, int y) const;
     void selectWordAt(size_t index);
+    void showSelectionMenu(int screenX, int screenY);
+    // Where a keyboard-invoked context menu should appear: the top-left of the
+    // selection, in screen coordinates.
+    POINT selectionMenuPoint() const;
     size_t selectionStart() const { return selectionAnchor_ < selectionFocus_ ? selectionAnchor_ : selectionFocus_; }
     size_t selectionEnd() const { return selectionAnchor_ < selectionFocus_ ? selectionFocus_ : selectionAnchor_; }
     int clientHeight() const;

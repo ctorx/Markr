@@ -31,6 +31,10 @@ It renders Markdown; it never shows the source and never lets you edit it.
   wrap-around
 - **Select and copy** — mouse selection of the *rendered* text; `Edit → Copy` is
   enabled only when something is selected
+- **Copy as Markdown or formatted text** — right-click a selection for
+  **Copy Markdown** (the markup behind what you selected) or **Copy Formatted**
+  (rich text, so a paste into Word or Outlook keeps the headings, emphasis,
+  lists and tables)
 - **Clickable links** — opens in the default browser
 - **High-DPI aware**, per-monitor v2
 
@@ -121,6 +125,7 @@ cross-file links — open them after a change to eyeball the result.
 | Show the outline | click the chevron at the top of the left strip; click it again to collapse |
 | Jump to a heading | click it in the outline |
 | Copy | select with the mouse, then `Edit → Copy` or `Ctrl+C` (`Ctrl+A` selects all) |
+| Copy Markdown / Formatted | right-click the selection (or `Shift+F10`) and pick one |
 | Find | `Ctrl+F` or the magnifier opens the box and focuses it; `Enter` or the **Search** button searches |
 | Find next / previous | `F3` / `Shift+F3` (also `Enter` / `Shift+Enter` in the box) |
 | Close the search box | `Esc`, or the magnifier again |
@@ -134,6 +139,7 @@ src\md_types.h      document model and the parse/dump entry points
 src\md_parser.cpp   block and inline parser (CommonMark + GFM extensions)
 src\md_debug.cpp    structural dump used by the tests
 src\layout.h/.cpp   width-driven layout: runs, decorations, hit testing, selection
+src\md_export.*     rebuilds markdown or HTML for a selected range of the view
 src\highlight.*     per-language lexers for fenced code blocks
 src\search.h/.cpp   find-all plus next/previous with wrap-around
 src\win_theme.*     light/dark palettes and OS dark-mode integration
@@ -173,3 +179,8 @@ menu mnemonics, `Alt+F` / `Alt+E` / `Alt+A` and `F10` open the menus.
   a browser. Block tags contribute their text content; the inline tags listed
   above map onto the equivalent Markdown styling.
 - Copying a wrapped paragraph yields the logical (unwrapped) text.
+- **Copy Markdown** rebuilds the markup from the parsed document rather than
+  slicing the file, so it is canonical Markdown: emphasis always comes back as
+  `*this*`, list indentation is normalised, and reference links come back
+  inline. It says the same thing as the source, not always in the same
+  characters.
