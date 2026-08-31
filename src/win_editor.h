@@ -47,7 +47,9 @@ public:
 
     // Whether closing the app with unsaved changes should prompt to save.
     // Defaults per document: off for untitled buffers, on for files from disk.
+    // Toggled from the frame chrome's disk button.
     bool nagOnExit() const { return nagOnExit_; }
+    void toggleNagOnExit() { nagOnExit_ = !nagOnExit_; }
 
     void focusEditor();
 
@@ -69,6 +71,18 @@ public:
     // Formatting shortcuts also reachable from the frame's accelerators.
     void toggleBold();
     void toggleItalic();
+
+    // Off for non-markdown documents: the formatting toolbar disappears, the
+    // markdown commands become no-ops and source styling is dropped.
+    void setMarkdownMode(bool on);
+
+    // Word wrap, persisted with the window state.
+    bool wordWrap() const { return wordWrap_; }
+    void setWordWrap(bool on);
+
+    // Line-number gutter, persisted with the window state.
+    bool showLineNumbers() const { return showLineNumbers_; }
+    void setShowLineNumbers(bool on);
 
     // Editor zoom, persisted separately from the reading view's zoom.
     void adjustZoom(int deltaPercent);
@@ -102,7 +116,6 @@ private:
     void destroyFonts();
     void applyEditorFormat();
     void updateTooltips();
-    void updateNagTip();
 
     void paint(HDC dc, const RECT& client);
     void paintToolbar(HDC dc, const RECT& client);
@@ -111,7 +124,8 @@ private:
     void paintStatus(HDC dc, const RECT& client);
     void drawGlyph(HDC dc, const RECT& bounds, int command, COLORREF color) const;
 
-    int toolbarHeight() const { return scale(44); }
+    // The formatting toolbar only exists for markdown documents.
+    int toolbarHeight() const { return markdownMode_ ? scale(44) : 0; }
     int findBarHeight() const { return findVisible_ ? scale(44) : 0; }
     int statusHeight() const { return scale(24); }
     int gutterWidth() const;
@@ -183,6 +197,9 @@ private:
     bool lastModified_ = false;
     bool suppressChange_ = false;
     bool nagOnExit_ = false;
+    bool markdownMode_ = true;
+    bool wordWrap_ = false;
+    bool showLineNumbers_ = true;
 
     HFONT gutterFont_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -190,6 +207,8 @@ private:
     HFONT codiconFont_ = nullptr;
     int gutterCharWidth_ = 8;
     int gutterDigits_ = 3;
+    // Vertical offset that centres the (smaller) gutter font in a text line.
+    int gutterYOffset_ = 0;
 
     std::vector<ToolButton> buttons_;
     int hotButton_ = -1;

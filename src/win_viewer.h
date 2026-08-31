@@ -155,6 +155,9 @@ private:
     void refreshOutline();
     void persistWindowState();
     void setEditMode(bool on);
+    // Enables or disables the markdown-only features (outline, rendered view)
+    // to match the type of the file the view holds.
+    void applyFileKind(const std::wstring& path);
     // A fresh untitled in-memory document, opened in edit mode.
     void newDocument();
     void saveEditor();
@@ -175,6 +178,7 @@ private:
     HWND searchButton_ = nullptr;
     HMENU fileMenu_ = nullptr;
     HMENU editMenu_ = nullptr;
+    HMENU viewMenu_ = nullptr;
     HMENU aboutMenu_ = nullptr;
     HACCEL accelerators_ = nullptr;
     HFONT uiFont_ = nullptr;
@@ -188,9 +192,14 @@ private:
     Theme theme_;
     int dpi_ = 96;
     bool editMode_ = false;
+    // False for non-markdown documents: the outline and the rendered view are
+    // unavailable, and the window stays in edit mode.
+    bool markdownFile_ = true;
     bool startExpanded_ = false;
     int startZoom_ = 100;
     int startEditorZoom_ = 100;
+    bool startWordWrap_ = false;
+    bool startLineNumbers_ = true;
     bool searchVisible_ = false;
     bool searchFailed_ = false;
     bool buttonHot_ = false;

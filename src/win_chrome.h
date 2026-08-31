@@ -22,7 +22,8 @@ public:
     WindowChrome& operator=(const WindowChrome&) = delete;
     WindowChrome() = default;
 
-    void initialize(HWND frame, HMENU fileMenu, HMENU editMenu, HMENU aboutMenu);
+    void initialize(HWND frame, HMENU fileMenu, HMENU editMenu, HMENU viewMenu,
+                    HMENU aboutMenu);
     void setTheme(const Theme& theme);
     void setDpi(int dpi);
     void setTitle(const std::wstring& title);
@@ -54,10 +55,20 @@ public:
     bool hitSearchButton(POINT clientPoint) const;
     void setSearchActive(bool active);
 
-    // Pencil button beside the magnifier: toggles edit mode.
+    // Pencil button beside the magnifier: toggles edit mode. Hidden for
+    // documents that have no rendered view to toggle to.
     RECT editButtonRect() const;
     bool hitEditButton(POINT clientPoint) const;
     void setEditActive(bool active);
+    void setEditButtonVisible(bool visible);
+
+    // Disk button to the right of the magnifier: toggles the editor's
+    // prompt-to-save-on-exit. Shown only while the editor is active; drawn
+    // with a slash when the prompt is off.
+    RECT saveButtonRect() const;
+    bool hitSaveButton(POINT clientPoint) const;
+    void setSaveActive(bool active);
+    void setSaveButtonVisible(bool visible);
 
     // Menu strip interaction. Both return true when the click/key was consumed.
     bool openMenuAt(POINT clientPoint);
@@ -100,6 +111,10 @@ private:
     bool searchActive_ = false;
     bool hotEdit_ = false;
     bool editActive_ = false;
+    bool editButtonVisible_ = true;
+    bool hotSave_ = false;
+    bool saveActive_ = false;
+    bool saveButtonVisible_ = false;
     LRESULT hot_ = HTNOWHERE;
     LRESULT pressed_ = HTNOWHERE;
 };

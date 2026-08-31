@@ -38,6 +38,8 @@ enum Command {
     ID_FIND_PREVIOUS,
     ID_FOCUS_SEARCH,
     ID_FIND_REPLACE,
+    ID_VIEW_WORDWRAP,
+    ID_VIEW_LINENUMBERS,
     ID_VIEW_SCROLLED,
     ID_VIEW_DOCUMENT_CHANGED,
     ID_RELOAD,
@@ -59,6 +61,22 @@ enum SelectionMenuCommand {
 
 // Polls the open document for external edits.
 constexpr UINT_PTR kFileWatchTimer = 1;
+
+// Markdown-only features (the outline panel and the rendered view) follow the
+// extension of the open file. Unlike isMarkdownPath below, .txt does not
+// qualify: Markr opens it, but as plain text. An untitled document counts as
+// markdown - it is saved as .md by default.
+bool isMarkdownDocument(const std::wstring& path) {
+    if (path.empty()) return true;
+    size_t dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos || path.find_first_of(L"\\/", dot) != std::wstring::npos) {
+        return false;
+    }
+    std::wstring extension = path.substr(dot + 1);
+    for (wchar_t& c : extension) c = static_cast<wchar_t>(towlower(c));
+    return extension == L"md" || extension == L"markdown" || extension == L"mdown" ||
+           extension == L"mkd" || extension == L"mdtxt" || extension == L"text";
+}
 
 int windowDpi(HWND hwnd) {
     using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
@@ -321,7 +339,9 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 loadFile(path);
             }
             DragFinish(drop);
-            SetFocus(hwnd_);
+            // A non-markdown drop flips the frame into edit mode, hiding this
+            // window; focus belongs to the editor then.
+            if (IsWindowVisible(hwnd_)) SetFocus(hwnd_);
             return 0;
         }
 
@@ -1103,6 +1123,8 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     startExpanded_ = saved.outlineExpanded;
     startZoom_ = saved.zoomPercent;
     startEditorZoom_ = saved.editorZoomPercent;
+    startWordWrap_ = saved.editorWordWrap;
+    startLineNumbers_ = saved.editorLineNumbers;
 
     // The menus stay unattached: the window draws its own strip, because owning
     // the caption means owning everything the system would put beside it.
@@ -1126,6 +1148,10 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(editMenu_, MF_STRING, ID_FOCUS_SEARCH, L"&Find\tCtrl+F");
     AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_FIND_REPLACE, L"R&eplace\tCtrl+H");
+
+    viewMenu_ = CreatePopupMenu();
+    AppendMenuW(viewMenu_, MF_STRING, ID_VIEW_WORDWRAP, L"&Word Wrap");
+    AppendMenuW(viewMenu_, MF_STRING, ID_VIEW_LINENUMBERS, L"Line &Numbers");
 
     aboutMenu_ = CreatePopupMenu();
     AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_PROJECT, L"&About Markr");
@@ -1191,6 +1217,8 @@ void AppWindow::persistWindowState() {
     state.outlineExpanded = outline_.expanded();
     state.zoomPercent = view_.zoomPercent();
     state.editorZoomPercent = editor_.zoomPercent();
+    state.editorWordWrap = editor_.wordWrap();
+    state.editorLineNumbers = editor_.showLineNumbers();
     saveWindowState(state);
 }
 
@@ -1332,7 +1360,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case WM_CREATE: {
             dpi_ = windowDpi(hwnd_);
             chrome_.setDpi(dpi_);
-            chrome_.initialize(hwnd_, fileMenu_, editMenu_, aboutMenu_);
+            chrome_.initialize(hwnd_, fileMenu_, editMenu_, viewMenu_, aboutMenu_);
             chrome_.setTitle(kAppTitle);
             // Follow the system convention: menu mnemonics stay hidden until the
             // user reaches for the keyboard.
@@ -1380,6 +1408,8 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             editor_.create(hwnd_, instance_);
             editor_.setDpi(dpi_);
             editor_.setZoomPercent(startEditorZoom_);
+            editor_.setWordWrap(startWordWrap_);
+            editor_.setShowLineNumbers(startLineNumbers_);
             editor_.setOnModifiedChanged([this]() { updateTitle(); });
 
             applyTheme();
@@ -1480,6 +1510,11 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 setEditMode(!editMode_);
                 return 0;
             }
+            if (chrome_.hitSaveButton(p)) {
+                editor_.toggleNagOnExit();
+                chrome_.setSaveActive(editor_.nagOnExit());
+                return 0;
+            }
             if (chrome_.openMenuAt(p)) return 0;
             break;
         }
@@ -1529,12 +1564,22 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                    editor_.modified() || editor_.filePath().empty());
             CheckMenuItem(editMenu_, ID_EDIT_MODE,
                           MF_BYCOMMAND | (editMode_ ? MF_CHECKED : MF_UNCHECKED));
+            enable(editMenu_, ID_EDIT_MODE, markdownFile_);
             enable(editMenu_, ID_EDIT_UNDO, editMode_ && editor_.canUndo());
             enable(editMenu_, ID_EDIT_REDO, editMode_ && editor_.canRedo());
             enable(editMenu_, ID_EDIT_CUT, editMode_ && editor_.hasSelection());
             enable(editMenu_, ID_EDIT_COPY, copyEnabled);
             enable(editMenu_, ID_EDIT_PASTE, editMode_ && editor_.canPaste());
             enable(editMenu_, ID_FIND_REPLACE, editMode_);
+            // Word wrap and line numbers are editor settings; the reading view
+            // always wraps and has no gutter.
+            enable(viewMenu_, ID_VIEW_WORDWRAP, editMode_);
+            CheckMenuItem(viewMenu_, ID_VIEW_WORDWRAP,
+                          MF_BYCOMMAND | (editor_.wordWrap() ? MF_CHECKED : MF_UNCHECKED));
+            enable(viewMenu_, ID_VIEW_LINENUMBERS, editMode_);
+            CheckMenuItem(viewMenu_, ID_VIEW_LINENUMBERS,
+                          MF_BYCOMMAND |
+                              (editor_.showLineNumbers() ? MF_CHECKED : MF_UNCHECKED));
             return 0;
         }
 
@@ -1555,7 +1600,13 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                     return 0;
                 case ID_EDIT_MODE:
-                    setEditMode(!editMode_);
+                    if (markdownFile_) setEditMode(!editMode_);
+                    return 0;
+                case ID_VIEW_WORDWRAP:
+                    editor_.setWordWrap(!editor_.wordWrap());
+                    return 0;
+                case ID_VIEW_LINENUMBERS:
+                    editor_.setShowLineNumbers(!editor_.showLineNumbers());
                     return 0;
                 case ID_EDIT_COPY: {
                     HWND focus = GetFocus();
@@ -1624,6 +1675,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     outline_.setActiveIndex(view_.activeOutlineIndex());
                     return 0;
                 case ID_VIEW_DOCUMENT_CHANGED:
+                    applyFileKind(view_.filePath());
                     refreshOutline();
                     updateTitle();
                     return 0;
@@ -1702,6 +1754,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (menuFont_) DeleteObject(menuFont_);
             if (fileMenu_) DestroyMenu(fileMenu_);
             if (editMenu_) DestroyMenu(editMenu_);
+            if (viewMenu_) DestroyMenu(viewMenu_);
             if (aboutMenu_) DestroyMenu(aboutMenu_);
             if (accelerators_) DestroyAcceleratorTable(accelerators_);
             PostQuitMessage(0);
@@ -1891,8 +1944,21 @@ void AppWindow::openPath(const std::wstring& path) {
     if (!editMode_) SetFocus(view_.hwnd());
 }
 
+void AppWindow::applyFileKind(const std::wstring& path) {
+    bool markdown = isMarkdownDocument(path);
+    if (markdown != markdownFile_) {
+        markdownFile_ = markdown;
+        chrome_.setEditButtonVisible(markdown);
+        editor_.setMarkdownMode(markdown);
+    }
+    // A non-markdown document has no rendered view to show, so it always
+    // opens in (and cannot leave) edit mode.
+    if (!markdown && !editMode_) setEditMode(true);
+}
+
 void AppWindow::setEditMode(bool on) {
     if (on == editMode_) return;
+    if (!on && !markdownFile_) return;
 
     if (on) {
         const std::wstring& path = view_.filePath();
@@ -1932,6 +1998,7 @@ void AppWindow::setEditMode(bool on) {
     }
 
     chrome_.setEditActive(editMode_);
+    chrome_.setSaveButtonVisible(editMode_);
     layoutChildren();
     updateTitle();
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -2030,6 +2097,9 @@ void AppWindow::updateTitle() {
                             ? std::wstring(L"Untitled")
                             : (slash == std::wstring::npos ? path : path.substr(slash + 1));
     if (editor_.modified() && editor_.filePath() == path) name += L"*";
+    // The chrome's disk button mirrors the editor's per-document nag state;
+    // this runs after every content change, so sync it here.
+    chrome_.setSaveActive(editor_.nagOnExit());
     std::wstring title = name + L" - " + kAppTitle;
     // The window text still drives the taskbar and Alt+Tab; the caption strip is
     // drawn from the same string.

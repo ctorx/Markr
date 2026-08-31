@@ -36,11 +36,7 @@ enum ToolbarCommand {
     CmdLink,
     CmdTable,
     CmdHr,
-    CmdNagOnExit,
 };
-
-const wchar_t* const kNagOnTip = L"Prompt to save on exit: on";
-const wchar_t* const kNagOffTip = L"Prompt to save on exit: off";
 
 enum ControlId {
     kEditId = 301,
@@ -103,7 +99,7 @@ SourcePalette sourcePalette(bool dark) {
     } else {
         p.background = RGB(255, 255, 255);
         p.text = RGB(0, 0, 0);
-        p.lineNumber = RGB(35, 120, 147);
+        p.lineNumber = RGB(140, 140, 140);
         p.heading = RGB(128, 0, 0);
         p.boldText = RGB(0, 0, 128);
         p.italic = RGB(128, 0, 128);
@@ -593,8 +589,9 @@ void EditorPane::createChildren(HINSTANCE instance) {
                             nullptr);
     SendMessageW(edit_, EM_SETTEXTMODE, TM_PLAINTEXT | TM_MULTILEVELUNDO | TM_MULTICODEPAGE, 0);
     SendMessageW(edit_, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_SELCHANGE);
-    // A target line width of 1 is RichEdit's documented "word wrap off" switch.
-    SendMessageW(edit_, EM_SETTARGETDEVICE, 0, 1);
+    // A target line width of 1 is RichEdit's documented "word wrap off" switch;
+    // 0 wraps to the window width.
+    SendMessageW(edit_, EM_SETTARGETDEVICE, 0, wordWrap_ ? 0 : 1);
     DragAcceptFiles(edit_, TRUE);
     SetWindowSubclass(edit_, &EditorPane::editProc, 1, reinterpret_cast<DWORD_PTR>(this));
 
@@ -658,10 +655,8 @@ void EditorPane::createChildren(HINSTANCE instance) {
         {CmdLink, L"Link", {}},
         {CmdTable, L"Table", {}},
         {CmdHr, L"Horizontal rule", {}},
-        {CmdNagOnExit, kNagOffTip, {}},
     };
     for (const ToolButton& button : layout) buttons_.push_back(button);
-    updateNagTip();
 
     rebuildFonts();
     applyEditorFormat();
@@ -694,7 +689,11 @@ void EditorPane::rebuildFonts() {
         return CreateFontIndirectW(&lf);
     };
 
-    gutterFont_ = makeFont(L"Consolas", 95, FW_NORMAL, false, false);
+    // Line numbers are slightly smaller than the text (both scale with the
+    // editor zoom); gutterYOffset_ centres them within a text line.
+    gutterFont_ = makeFont(L"Consolas", MulDiv(90, zoomPercent_, 100), FW_NORMAL, false, false);
+    HFONT contentFont =
+        makeFont(L"Consolas", MulDiv(105, zoomPercent_, 100), FW_NORMAL, false, false);
     uiFont_ = makeFont(L"Segoe UI", 90, FW_NORMAL, false, false);
     smallBoldFont_ = makeFont(L"Segoe UI", 85, FW_BOLD, false, false);
     // The Codicon icon font, embedded at build time. 12pt is the 16px grid the
@@ -706,8 +705,13 @@ void EditorPane::rebuildFonts() {
     TEXTMETRICW tm = {};
     GetTextMetricsW(dc, &tm);
     gutterCharWidth_ = tm.tmAveCharWidth;
+    const int gutterTextHeight = tm.tmHeight;
+    SelectObject(dc, contentFont);
+    GetTextMetricsW(dc, &tm);
+    gutterYOffset_ = std::max(0, static_cast<int>(tm.tmHeight - gutterTextHeight) / 2);
     SelectObject(dc, previous);
     ReleaseDC(hwnd_, dc);
+    DeleteObject(contentFont);
 
     HWND fontTargets[] = {findField_, replaceField_, findNextButton_, replaceButton_,
                           replaceAllButton_};
@@ -754,6 +758,7 @@ void EditorPane::setDpi(int dpi) {
 }
 
 int EditorPane::gutterWidth() const {
+    if (!showLineNumbers_) return 0;
     return scale(8) * 2 + gutterDigits_ * gutterCharWidth_;
 }
 
@@ -778,10 +783,10 @@ void EditorPane::layoutChildren() {
     int x = scale(8);
     int y = (toolbarHeight() - buttonSize) / 2;
     for (ToolButton& button : buttons_) {
-        if (button.command == CmdNagOnExit) {
-            // Right-justified, aligned under the chrome's search button.
-            int right = client.right - scale(8);
-            button.bounds = RECT{right - buttonSize, y, right, y + buttonSize};
+        if (!markdownMode_) {
+            // Markdown formatting is unavailable; an empty rect hides the
+            // button from painting, hit testing and tooltips alike.
+            button.bounds = RECT{0, 0, 0, 0};
         } else if (button.command == 0) {
             button.bounds = RECT{x, y, x + separator, y + buttonSize};
             x += separator;
@@ -868,17 +873,6 @@ void EditorPane::updateTooltips() {
         SendMessageW(tooltip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&info));
         SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
     }
-}
-
-void EditorPane::updateNagTip() {
-    for (ToolButton& button : buttons_) {
-        if (button.command == CmdNagOnExit) {
-            button.tip = nagOnExit_ ? kNagOnTip : kNagOffTip;
-            break;
-        }
-    }
-    updateTooltips();
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 int EditorPane::hitTestButton(POINT p) const {
@@ -972,7 +966,6 @@ EditorPane::LineBlock EditorPane::selectedLines() const {
 void EditorPane::setContent(const std::wstring& text, const std::wstring& path) {
     path_ = path;
     nagOnExit_ = !path.empty();
-    updateNagTip();
     SetWindowTextW(edit_, text.c_str());
     SendMessageW(edit_, EM_SETMODIFY, FALSE, 0);
     SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);
@@ -1039,12 +1032,49 @@ bool EditorPane::canPaste() const {
     return SendMessageW(edit_, EM_CANPASTE, 0, 0) != 0;
 }
 
-void EditorPane::toggleBold() { toggleInline(L"**", L"**"); }
-void EditorPane::toggleItalic() { toggleInline(L"*", L"*"); }
+void EditorPane::toggleBold() {
+    if (markdownMode_) toggleInline(L"**", L"**");
+}
+void EditorPane::toggleItalic() {
+    if (markdownMode_) toggleInline(L"*", L"*");
+}
+
+void EditorPane::setMarkdownMode(bool on) {
+    if (markdownMode_ == on) return;
+    markdownMode_ = on;
+    applyEditorFormat(); // SCF_ALL: clears any leftover source styling
+    if (markdownMode_) applyHighlighting();
+    if (hwnd_) {
+        layoutChildren();
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+}
+
+void EditorPane::setShowLineNumbers(bool on) {
+    if (showLineNumbers_ == on) return;
+    showLineNumbers_ = on;
+    if (hwnd_) {
+        layoutChildren();
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+}
+
+void EditorPane::setWordWrap(bool on) {
+    if (wordWrap_ == on) return;
+    wordWrap_ = on;
+    if (edit_) {
+        SendMessageW(edit_, EM_SETTARGETDEVICE, 0, wordWrap_ ? 0 : 1);
+        InvalidateRect(edit_, nullptr, TRUE);
+    }
+    refreshChrome();
+}
 
 void EditorPane::setZoomPercent(int percent) {
     zoomPercent_ = std::max(50, std::min(300, percent));
     if (edit_) SendMessageW(edit_, EM_SETZOOM, zoomPercent_, 100);
+    // The gutter font tracks the zoomed text size, and its width follows.
+    rebuildFonts();
+    if (hwnd_) layoutChildren();
     refreshChrome();
 }
 
@@ -1055,6 +1085,7 @@ void EditorPane::resetZoom() { setZoomPercent(100); }
 // ------------------------------------------------------------ formatting ops
 
 void EditorPane::runCommand(int command) {
+    if (!markdownMode_) return;
     switch (command) {
         case CmdBold: toggleInline(L"**", L"**"); break;
         case CmdItalic: toggleInline(L"*", L"*"); break;
@@ -1072,10 +1103,6 @@ void EditorPane::runCommand(int command) {
         case CmdLink: insertLink(); break;
         case CmdTable: insertTable(); break;
         case CmdHr: insertHorizontalRule(); break;
-        case CmdNagOnExit:
-            nagOnExit_ = !nagOnExit_;
-            updateNagTip();
-            break;
         default: break;
     }
     SetFocus(edit_);
@@ -1393,6 +1420,8 @@ void EditorPane::scheduleHighlight() {
 }
 
 void EditorPane::applyHighlighting() {
+    // Plain-text documents get no source styling at all.
+    if (!markdownMode_) return;
     if (!tomDoc_ || !edit_) return;
     std::wstring text = allTextRaw();
     SourcePalette pal = sourcePalette(theme_.dark);
@@ -1482,7 +1511,7 @@ void EditorPane::refreshChrome() {
 
 void EditorPane::paint(HDC dc, const RECT& client) {
     fillRect(dc, client, theme_.barBackground);
-    paintToolbar(dc, client);
+    if (toolbarHeight() > 0) paintToolbar(dc, client);
     if (findVisible_) paintFindBar(dc, client);
     paintGutter(dc, client);
     paintStatus(dc, client);
@@ -1496,6 +1525,7 @@ void EditorPane::paintToolbar(HDC dc, const RECT& client) {
 
     for (size_t i = 0; i < buttons_.size(); ++i) {
         const ToolButton& button = buttons_[i];
+        if (button.bounds.right <= button.bounds.left) continue;
         if (button.command == 0) {
             int x = (button.bounds.left + button.bounds.right) / 2;
             RECT line = {x, button.bounds.top + scale(4), x + std::max(1, scale(1)),
@@ -1534,6 +1564,7 @@ void EditorPane::paintFindBar(HDC dc, const RECT& client) {
 
 void EditorPane::paintGutter(HDC dc, const RECT& client) {
     (void)client;
+    if (!showLineNumbers_) return;
     SourcePalette pal = sourcePalette(theme_.dark);
     RECT content = contentRect();
     RECT gutter = {0, content.top, gutterWidth(), content.bottom};
@@ -1572,7 +1603,7 @@ void EditorPane::paintGutter(HDC dc, const RECT& client) {
         int length = swprintf(buffer, ARRAYSIZE(buffer), L"%ld", line + 1);
         SIZE size = {};
         GetTextExtentPoint32W(dc, buffer, length, &size);
-        TextOutW(dc, rightEdge - size.cx, y, buffer, length);
+        TextOutW(dc, rightEdge - size.cx, y + gutterYOffset_, buffer, length);
     }
     SelectObject(dc, previousFont);
 }
@@ -1654,23 +1685,6 @@ void EditorPane::drawGlyph(HDC dc, const RECT& bounds, int command, COLORREF col
         case CmdLink: drawIcon(0xEB15); break;      // link
         case CmdTable: drawIcon(0xEBB7); break;     // table
         case CmdHr: drawIcon(0xEB07); break;        // horizontal-rule
-        case CmdNagOnExit: {
-            // Disk = prompt to save on exit; slashed disk = close silently.
-            // There is no "save-slash" codicon, so the slash is drawn on top.
-            drawIcon(0xEB4B); // save
-            if (!nagOnExit_) {
-                const int cx = (bounds.left + bounds.right) / 2;
-                const int cy = (bounds.top + bounds.bottom) / 2;
-                const int r = scale(8);
-                HPEN pen = CreatePen(PS_SOLID, std::max(1, scale(1)), color);
-                HGDIOBJ previous = SelectObject(dc, pen);
-                MoveToEx(dc, cx - r, cy - r, nullptr);
-                LineTo(dc, cx + r, cy + r);
-                SelectObject(dc, previous);
-                DeleteObject(pen);
-            }
-            break;
-        }
         default:
             break;
     }

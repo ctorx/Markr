@@ -35,6 +35,7 @@ COLORREF blend(COLORREF a, COLORREF b, int percentB) {
 // Codicon glyphs (the VS Code icon font, embedded as a resource).
 constexpr wchar_t kGlyphSearch = 0xEA6D; // codicon "search"
 constexpr wchar_t kGlyphEdit = 0xEA73;   // codicon "edit"
+constexpr wchar_t kGlyphSave = 0xEB4B;   // codicon "save"
 
 WindowChrome::~WindowChrome() {
     if (captionFont_) DeleteObject(captionFont_);
@@ -43,12 +44,14 @@ WindowChrome::~WindowChrome() {
     if (appIcon_) DestroyIcon(appIcon_);
 }
 
-void WindowChrome::initialize(HWND frame, HMENU fileMenu, HMENU editMenu, HMENU aboutMenu) {
+void WindowChrome::initialize(HWND frame, HMENU fileMenu, HMENU editMenu, HMENU viewMenu,
+                              HMENU aboutMenu) {
     frame_ = frame;
 
     items_.clear();
     items_.push_back(MenuItem{L"&File", L'f', fileMenu, {}});
     items_.push_back(MenuItem{L"&Edit", L'e', editMenu, {}});
+    items_.push_back(MenuItem{L"&View", L'v', viewMenu, {}});
     items_.push_back(MenuItem{L"&About", L'a', aboutMenu, {}});
 
     rebuildFonts();
@@ -325,12 +328,33 @@ void WindowChrome::paint(HDC dc, const RECT& client) const {
     drawCodicon(dc, search, kGlyphSearch,
                 searchActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
 
-    RECT edit = editButtonRect();
-    if (editActive_ || hotEdit_) {
-        fillRect(dc, edit, editActive_ ? theme_.menuHot : theme_.captionButtonHot);
+    if (editButtonVisible_) {
+        RECT edit = editButtonRect();
+        if (editActive_ || hotEdit_) {
+            fillRect(dc, edit, editActive_ ? theme_.menuHot : theme_.captionButtonHot);
+        }
+        drawCodicon(dc, edit, kGlyphEdit,
+                    editActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
     }
-    drawCodicon(dc, edit, kGlyphEdit,
-                editActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
+
+    if (saveButtonVisible_) {
+        RECT save = saveButtonRect();
+        if (hotSave_) fillRect(dc, save, theme_.captionButtonHot);
+        drawCodicon(dc, save, kGlyphSave, theme_.menuText);
+        // Disk = prompt to save on exit; slashed disk = close silently. There
+        // is no "save-slash" codicon, so the slash is drawn on top.
+        if (!saveActive_) {
+            const int cx = (save.left + save.right) / 2;
+            const int cy = (save.top + save.bottom) / 2;
+            const int radius = scale(8);
+            HPEN pen = CreatePen(PS_SOLID, (std::max)(1, scale(1)), theme_.menuText);
+            HGDIOBJ previous = SelectObject(dc, pen);
+            MoveToEx(dc, cx - radius, cy - radius, nullptr);
+            LineTo(dc, cx + radius, cy + radius);
+            SelectObject(dc, previous);
+            DeleteObject(pen);
+        }
+    }
 }
 
 void WindowChrome::paintResizeGrip(HDC dc, const RECT& client) const {
@@ -385,6 +409,8 @@ RECT WindowChrome::searchButtonRect() const {
     int bottom = captionHeight() + menuHeight() - inset;
     int right = client.right - scale(kMenuStripLeft);
     int width = bottom - top;
+    // The save button owns the rightmost slot when it is shown.
+    if (saveButtonVisible_) right -= width + scale(4);
     return RECT{right - width, top, right, bottom};
 }
 
@@ -407,6 +433,7 @@ RECT WindowChrome::editButtonRect() const {
 }
 
 bool WindowChrome::hitEditButton(POINT clientPoint) const {
+    if (!editButtonVisible_) return false;
     RECT bounds = editButtonRect();
     return PtInRect(&bounds, clientPoint) != FALSE;
 }
@@ -414,6 +441,39 @@ bool WindowChrome::hitEditButton(POINT clientPoint) const {
 void WindowChrome::setEditActive(bool active) {
     if (editActive_ == active) return;
     editActive_ = active;
+    if (frame_) InvalidateRect(frame_, nullptr, FALSE);
+}
+
+void WindowChrome::setEditButtonVisible(bool visible) {
+    if (editButtonVisible_ == visible) return;
+    editButtonVisible_ = visible;
+    if (!visible) hotEdit_ = false;
+    if (frame_) InvalidateRect(frame_, nullptr, FALSE);
+}
+
+RECT WindowChrome::saveButtonRect() const {
+    RECT search = searchButtonRect();
+    int width = search.right - search.left;
+    int gap = scale(4);
+    return RECT{search.right + gap, search.top, search.right + gap + width, search.bottom};
+}
+
+bool WindowChrome::hitSaveButton(POINT clientPoint) const {
+    if (!saveButtonVisible_) return false;
+    RECT bounds = saveButtonRect();
+    return PtInRect(&bounds, clientPoint) != FALSE;
+}
+
+void WindowChrome::setSaveActive(bool active) {
+    if (saveActive_ == active) return;
+    saveActive_ = active;
+    if (frame_) InvalidateRect(frame_, nullptr, FALSE);
+}
+
+void WindowChrome::setSaveButtonVisible(bool visible) {
+    if (saveButtonVisible_ == visible) return;
+    saveButtonVisible_ = visible;
+    if (!visible) hotSave_ = false;
     if (frame_) InvalidateRect(frame_, nullptr, FALSE);
 }
 
@@ -427,10 +487,15 @@ bool WindowChrome::updateMenuHover(POINT clientPoint) {
     }
     bool overSearch = hitSearchButton(clientPoint);
     bool overEdit = hitEditButton(clientPoint);
-    if (found == hotItem_ && overSearch == hotSearch_ && overEdit == hotEdit_) return false;
+    bool overSave = hitSaveButton(clientPoint);
+    if (found == hotItem_ && overSearch == hotSearch_ && overEdit == hotEdit_ &&
+        overSave == hotSave_) {
+        return false;
+    }
     hotItem_ = found;
     hotSearch_ = overSearch;
     hotEdit_ = overEdit;
+    hotSave_ = overSave;
     return true;
 }
 

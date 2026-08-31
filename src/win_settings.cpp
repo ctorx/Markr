@@ -53,6 +53,12 @@ WindowState loadWindowState() {
                    readDword(key, L"WindowHeight", &height);
     readDword(key, L"WindowMaximized", &maximized);
     if (readDword(key, L"OutlineExpanded", &outline)) state.outlineExpanded = outline != 0;
+    DWORD wordWrap = 0;
+    if (readDword(key, L"EditorWordWrap", &wordWrap)) state.editorWordWrap = wordWrap != 0;
+    DWORD lineNumbers = 0;
+    if (readDword(key, L"EditorLineNumbers", &lineNumbers)) {
+        state.editorLineNumbers = lineNumbers != 0;
+    }
     RegCloseKey(key);
 
     if (!haveAll) return state;
@@ -81,6 +87,8 @@ void saveWindowState(const WindowState& state) {
     writeDword(key, L"OutlineExpanded", state.outlineExpanded ? 1 : 0);
     writeDword(key, L"ZoomPercent", static_cast<DWORD>(state.zoomPercent));
     writeDword(key, L"EditorZoomPercent", static_cast<DWORD>(state.editorZoomPercent));
+    writeDword(key, L"EditorWordWrap", state.editorWordWrap ? 1 : 0);
+    writeDword(key, L"EditorLineNumbers", state.editorLineNumbers ? 1 : 0);
     RegCloseKey(key);
 }
 
