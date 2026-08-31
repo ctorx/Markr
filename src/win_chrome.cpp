@@ -32,9 +32,15 @@ COLORREF blend(COLORREF a, COLORREF b, int percentB) {
 
 } // namespace
 
+// Codicon glyphs (the VS Code icon font, embedded as a resource).
+constexpr wchar_t kGlyphSearch = 0xEA6D; // codicon "search"
+constexpr wchar_t kGlyphEdit = 0xEA73;   // codicon "edit"
+
 WindowChrome::~WindowChrome() {
     if (captionFont_) DeleteObject(captionFont_);
     if (menuFont_) DeleteObject(menuFont_);
+    if (codiconFont_) DeleteObject(codiconFont_);
+    if (appIcon_) DestroyIcon(appIcon_);
 }
 
 void WindowChrome::initialize(HWND frame, HMENU fileMenu, HMENU editMenu, HMENU aboutMenu) {
@@ -68,12 +74,27 @@ void WindowChrome::setTitle(const std::wstring& title) {
 void WindowChrome::rebuildFonts() {
     if (captionFont_) DeleteObject(captionFont_);
     if (menuFont_) DeleteObject(menuFont_);
+    if (codiconFont_) DeleteObject(codiconFont_);
 
     NONCLIENTMETRICSW metrics = {sizeof(metrics)};
     SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0,
                                static_cast<UINT>(dpi_));
     captionFont_ = CreateFontIndirectW(&metrics.lfCaptionFont);
     menuFont_ = CreateFontIndirectW(&metrics.lfMenuFont);
+
+    // Codicon is designed on a 16px grid; the em box is the icon box.
+    LOGFONTW lf = {};
+    lf.lfHeight = -scale(16);
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    wcsncpy_s(lf.lfFaceName, L"codicon", _TRUNCATE);
+    codiconFont_ = CreateFontIndirectW(&lf);
+
+    // The application icon (resource id 1), sized for the caption strip.
+    if (appIcon_) DestroyIcon(appIcon_);
+    int iconSize = scale(16);
+    appIcon_ = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1),
+                                             IMAGE_ICON, iconSize, iconSize, 0));
 }
 
 int WindowChrome::captionHeight() const {
@@ -255,9 +276,16 @@ void WindowChrome::paint(HDC dc, const RECT& client) const {
 
     SetBkMode(dc, TRANSPARENT);
 
-    // Title, with its extra left padding.
+    // App icon, then the title, with its extra left padding.
     RECT titleRect = caption;
     titleRect.left = scale(kTitleLeft);
+    if (appIcon_) {
+        int iconSize = scale(16);
+        int iconY = (captionHeight() - iconSize) / 2;
+        DrawIconEx(dc, titleRect.left, iconY, appIcon_, iconSize, iconSize, 0, nullptr,
+                   DI_NORMAL);
+        titleRect.left += iconSize + scale(8);
+    }
     titleRect.right = buttonRect(2, client).left - scale(8);
     if (titleRect.right > titleRect.left) {
         HGDIOBJ previous = SelectObject(dc, captionFont_);
@@ -294,14 +322,15 @@ void WindowChrome::paint(HDC dc, const RECT& client) const {
     if (searchActive_ || hotSearch_) {
         fillRect(dc, search, searchActive_ ? theme_.menuHot : theme_.captionButtonHot);
     }
-    drawMagnifier(dc, search, searchActive_ ? theme_.role(view::ColorRole::Link)
-                                            : theme_.menuText);
+    drawCodicon(dc, search, kGlyphSearch,
+                searchActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
 
     RECT edit = editButtonRect();
     if (editActive_ || hotEdit_) {
         fillRect(dc, edit, editActive_ ? theme_.menuHot : theme_.captionButtonHot);
     }
-    drawPencil(dc, edit, editActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
+    drawCodicon(dc, edit, kGlyphEdit,
+                editActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
 }
 
 void WindowChrome::paintResizeGrip(HDC dc, const RECT& client) const {
@@ -405,64 +434,15 @@ bool WindowChrome::updateMenuHover(POINT clientPoint) {
     return true;
 }
 
-void WindowChrome::drawMagnifier(HDC dc, const RECT& button, COLORREF color) const {
-    int centreX = (button.left + button.right) / 2;
-    int centreY = (button.top + button.bottom) / 2;
-    int radius = std::max(4, scale(5));
-    int thickness = std::max(1, scale(2) - 1);
-
-    HPEN pen = CreatePen(PS_SOLID, thickness, color);
-    HGDIOBJ previousPen = SelectObject(dc, pen);
-    HGDIOBJ previousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-
-    int lensX = centreX - std::max(1, scale(1));
-    int lensY = centreY - std::max(1, scale(1));
-    Ellipse(dc, lensX - radius, lensY - radius, lensX + radius, lensY + radius);
-
-    int handle = std::max(3, scale(4));
-    int start = static_cast<int>(radius * 0.7);
-    MoveToEx(dc, lensX + start, lensY + start, nullptr);
-    LineTo(dc, lensX + start + handle, lensY + start + handle);
-
-    SelectObject(dc, previousBrush);
-    SelectObject(dc, previousPen);
-    DeleteObject(pen);
-}
-
-void WindowChrome::drawPencil(HDC dc, const RECT& button, COLORREF color) const {
-    // A small filled marker, echoing the application icon: diagonal body,
-    // chisel tip pointing to the lower left, and an ink stroke beneath.
-    int centreX = (button.left + button.right) / 2;
-    int centreY = (button.top + button.bottom) / 2 - scale(2);
-
-    HBRUSH brush = CreateSolidBrush(color);
-    HGDIOBJ previousBrush = SelectObject(dc, brush);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HGDIOBJ previousPen = SelectObject(dc, pen);
-
-    POINT body[4] = {
-        {centreX + scale(2), centreY - scale(7)},
-        {centreX + scale(6), centreY - scale(3)},
-        {centreX - scale(1), centreY + scale(4)},
-        {centreX - scale(5), centreY + scale(0)},
-    };
-    Polygon(dc, body, 4);
-
-    POINT tip[3] = {
-        {centreX - scale(4), centreY + scale(1)},
-        {centreX - scale(1), centreY + scale(4)},
-        {centreX - scale(7), centreY + scale(7)},
-    };
-    Polygon(dc, tip, 3);
-
-    RECT stroke = {centreX - scale(7), centreY + scale(8), centreX + scale(4),
-                   centreY + scale(8) + std::max(2, scale(2))};
-    fillRect(dc, stroke, color);
-
-    SelectObject(dc, previousPen);
-    SelectObject(dc, previousBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+void WindowChrome::drawCodicon(HDC dc, const RECT& button, wchar_t glyph,
+                               COLORREF color) const {
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    HGDIOBJ previous = SelectObject(dc, codiconFont_);
+    RECT bounds = button;
+    wchar_t text[2] = {glyph, 0};
+    DrawTextW(dc, text, 1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, previous);
 }
 
 bool WindowChrome::openMenuAt(POINT clientPoint) {

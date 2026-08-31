@@ -1,3 +1,7 @@
 // Application resources. Icon id 1 is what Explorer picks up for the .exe and
 // what the window class loads at runtime.
 1 ICON "..\\assets\\markr.ico"
+
+// Codicon icon font (id 2), from microsoft/vscode-codicons (CC BY 4.0).
+// Loaded at startup with AddFontMemResourceEx; drawn as text glyphs.
+2 RCDATA "..\\assets\\codicon.ttf"

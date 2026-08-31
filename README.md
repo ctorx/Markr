@@ -209,3 +209,10 @@ menu mnemonics, `Alt+F` / `Alt+E` / `Alt+A` and `F10` open the menus.
   `*this*`, list indentation is normalised, and reference links come back
   inline. It says the same thing as the source, not always in the same
   characters.
+
+## Credits
+
+- Toolbar and chrome icons are [Codicons](https://github.com/microsoft/vscode-codicons),
+  the VS Code icon font, © Microsoft, licensed under
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The font
+  (`assets/codicon.ttf`) is embedded into the executable at build time.

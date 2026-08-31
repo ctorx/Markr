@@ -88,9 +88,10 @@ private:
 
     HFONT captionFont_ = nullptr;
     HFONT menuFont_ = nullptr;
+    HFONT codiconFont_ = nullptr;
+    HICON appIcon_ = nullptr;
 
-    void drawMagnifier(HDC dc, const RECT& button, COLORREF color) const;
-    void drawPencil(HDC dc, const RECT& button, COLORREF color) const;
+    void drawCodicon(HDC dc, const RECT& button, wchar_t glyph, COLORREF color) const;
 
     std::vector<MenuItem> items_;
     int openItem_ = -1;

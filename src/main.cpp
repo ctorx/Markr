@@ -25,6 +25,20 @@ void enablePerMonitorDpi() {
     SetProcessDPIAware();
 }
 
+// Registers the embedded Codicon icon font (resource id 2) for this process,
+// so "codicon" is available as a face name to every CreateFont call.
+void loadCodiconFont(HINSTANCE instance) {
+    HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(2), RT_RCDATA);
+    if (!resource) return;
+    HGLOBAL handle = LoadResource(instance, resource);
+    if (!handle) return;
+    void* data = LockResource(handle);
+    DWORD size = SizeofResource(instance, resource);
+    if (!data || !size) return;
+    DWORD installed = 0;
+    AddFontMemResourceEx(data, size, nullptr, &installed);
+}
+
 std::wstring firstCommandLineArgument() {
     int count = 0;
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
@@ -40,6 +54,7 @@ std::wstring firstCommandLineArgument() {
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     enablePerMonitorDpi();
+    loadCodiconFont(instance);
 
     INITCOMMONCONTROLSEX controls = {sizeof(controls),
                                      ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};

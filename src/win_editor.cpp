@@ -36,7 +36,11 @@ enum ToolbarCommand {
     CmdLink,
     CmdTable,
     CmdHr,
+    CmdNagOnExit,
 };
+
+const wchar_t* const kNagOnTip = L"Prompt to save on exit: on";
+const wchar_t* const kNagOffTip = L"Prompt to save on exit: off";
 
 enum ControlId {
     kEditId = 301,
@@ -654,8 +658,10 @@ void EditorPane::createChildren(HINSTANCE instance) {
         {CmdLink, L"Link", {}},
         {CmdTable, L"Table", {}},
         {CmdHr, L"Horizontal rule", {}},
+        {CmdNagOnExit, kNagOffTip, {}},
     };
     for (const ToolButton& button : layout) buttons_.push_back(button);
+    updateNagTip();
 
     rebuildFonts();
     applyEditorFormat();
@@ -663,8 +669,7 @@ void EditorPane::createChildren(HINSTANCE instance) {
 }
 
 void EditorPane::destroyFonts() {
-    HFONT* fonts[] = {&gutterFont_, &uiFont_,        &boldFont_,      &italicFont_,
-                      &strikeFont_, &smallBoldFont_, &codeGlyphFont_, &tinyFont_};
+    HFONT* fonts[] = {&gutterFont_, &uiFont_, &smallBoldFont_, &codiconFont_};
     for (HFONT* font : fonts) {
         if (*font) {
             DeleteObject(*font);
@@ -691,12 +696,10 @@ void EditorPane::rebuildFonts() {
 
     gutterFont_ = makeFont(L"Consolas", 95, FW_NORMAL, false, false);
     uiFont_ = makeFont(L"Segoe UI", 90, FW_NORMAL, false, false);
-    boldFont_ = makeFont(L"Segoe UI", 115, FW_BOLD, false, false);
-    italicFont_ = makeFont(L"Georgia", 115, FW_NORMAL, true, false);
-    strikeFont_ = makeFont(L"Segoe UI", 115, FW_SEMIBOLD, false, true);
     smallBoldFont_ = makeFont(L"Segoe UI", 85, FW_BOLD, false, false);
-    codeGlyphFont_ = makeFont(L"Consolas", 95, FW_SEMIBOLD, false, false);
-    tinyFont_ = makeFont(L"Segoe UI", 65, FW_SEMIBOLD, false, false);
+    // The Codicon icon font, embedded at build time. 12pt is the 16px grid the
+    // set is designed on.
+    codiconFont_ = makeFont(L"codicon", 120, FW_NORMAL, false, false);
 
     HDC dc = GetDC(hwnd_);
     HGDIOBJ previous = SelectObject(dc, gutterFont_);
@@ -775,7 +778,11 @@ void EditorPane::layoutChildren() {
     int x = scale(8);
     int y = (toolbarHeight() - buttonSize) / 2;
     for (ToolButton& button : buttons_) {
-        if (button.command == 0) {
+        if (button.command == CmdNagOnExit) {
+            // Right-justified, aligned under the chrome's search button.
+            int right = client.right - scale(8);
+            button.bounds = RECT{right - buttonSize, y, right, y + buttonSize};
+        } else if (button.command == 0) {
             button.bounds = RECT{x, y, x + separator, y + buttonSize};
             x += separator;
         } else {
@@ -861,6 +868,17 @@ void EditorPane::updateTooltips() {
         SendMessageW(tooltip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&info));
         SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
     }
+}
+
+void EditorPane::updateNagTip() {
+    for (ToolButton& button : buttons_) {
+        if (button.command == CmdNagOnExit) {
+            button.tip = nagOnExit_ ? kNagOnTip : kNagOffTip;
+            break;
+        }
+    }
+    updateTooltips();
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 int EditorPane::hitTestButton(POINT p) const {
@@ -953,6 +971,8 @@ EditorPane::LineBlock EditorPane::selectedLines() const {
 
 void EditorPane::setContent(const std::wstring& text, const std::wstring& path) {
     path_ = path;
+    nagOnExit_ = !path.empty();
+    updateNagTip();
     SetWindowTextW(edit_, text.c_str());
     SendMessageW(edit_, EM_SETMODIFY, FALSE, 0);
     SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);
@@ -1052,6 +1072,10 @@ void EditorPane::runCommand(int command) {
         case CmdLink: insertLink(); break;
         case CmdTable: insertTable(); break;
         case CmdHr: insertHorizontalRule(); break;
+        case CmdNagOnExit:
+            nagOnExit_ = !nagOnExit_;
+            updateNagTip();
+            break;
         default: break;
     }
     SetFocus(edit_);
@@ -1589,8 +1613,6 @@ void EditorPane::paintStatus(HDC dc, const RECT& client) {
 void EditorPane::drawGlyph(HDC dc, const RECT& bounds, int command, COLORREF color) const {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
-    const int cx = (bounds.left + bounds.right) / 2;
-    const int cy = (bounds.top + bounds.bottom) / 2;
 
     auto drawText = [&](const wchar_t* text, HFONT font) {
         HGDIOBJ previous = SelectObject(dc, font);
@@ -1598,109 +1620,55 @@ void EditorPane::drawGlyph(HDC dc, const RECT& bounds, int command, COLORREF col
         DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(dc, previous);
     };
-    auto line = [&](int x1, int y1, int x2, int y2, int thickness, COLORREF penColor) {
-        HPEN pen = CreatePen(PS_SOLID, thickness, penColor);
-        HGDIOBJ previous = SelectObject(dc, pen);
-        MoveToEx(dc, x1, y1, nullptr);
-        LineTo(dc, x2, y2);
-        SelectObject(dc, previous);
-        DeleteObject(pen);
+    // Codicon glyphs (the VS Code icon font, embedded as a resource); the
+    // comments name each icon in microsoft/vscode-codicons.
+    auto drawIcon = [&](wchar_t glyph) {
+        wchar_t text[2] = {glyph, 0};
+        drawText(text, codiconFont_);
     };
-    const int thin = std::max(1, scale(1));
-    const int thick = std::max(2, scale(2));
-
-    // Every glyph is designed inside the same box: ±ex wide, ±ey tall.
-    const int ex = scale(9);
-    const int ey = scale(7);
 
     switch (command) {
-        case CmdBold: drawText(L"B", boldFont_); break;
-        case CmdItalic: drawText(L"I", italicFont_); break;
-        case CmdStrike: drawText(L"S", strikeFont_); break;
+        case CmdBold: drawIcon(0xEAA3); break;      // bold
+        case CmdItalic: drawIcon(0xEB0D); break;    // italic
+        case CmdStrike: drawIcon(0xEC64); break;    // strikethrough
         case CmdHighlight: {
-            RECT mark = {cx - ex + scale(1), cy - ey, cx + ex - scale(1), cy + ey + scale(1)};
+            // No highlight codicon: a marked "a", echoing the rendered output.
+            const int cx = (bounds.left + bounds.right) / 2;
+            const int cy = (bounds.top + bounds.bottom) / 2;
+            RECT mark = {cx - scale(8), cy - scale(7), cx + scale(8), cy + scale(8)};
             fillRect(dc, mark, theme_.role(view::ColorRole::MarkBg));
             SetTextColor(dc, theme_.role(view::ColorRole::MarkText));
             drawText(L"a", smallBoldFont_);
             SetTextColor(dc, color);
             break;
         }
-        case CmdCode: drawText(L"</>", codeGlyphFont_); break;
+        case CmdCode: drawIcon(0xEAC4); break;      // code
         case CmdH1: drawText(L"H1", smallBoldFont_); break;
         case CmdH2: drawText(L"H2", smallBoldFont_); break;
         case CmdH3: drawText(L"H3", smallBoldFont_); break;
-        case CmdBullet: {
-            for (int i = -1; i <= 1; ++i) {
-                int y = cy + i * scale(6);
-                RECT dot = {cx - ex, y - thin, cx - ex + thick, y - thin + thick};
-                fillRect(dc, dot, color);
-                line(cx - ex + scale(5), y, cx + ex, y, thin, color);
+        case CmdBullet: drawIcon(0xEB17); break;    // list-unordered
+        case CmdNumber: drawIcon(0xEB16); break;    // list-ordered
+        case CmdTask: drawIcon(0xEB67); break;      // tasklist
+        case CmdQuote: drawIcon(0xEB33); break;     // quote
+        case CmdCodeBlock: drawIcon(0xEB0F); break; // json (curly braces)
+        case CmdLink: drawIcon(0xEB15); break;      // link
+        case CmdTable: drawIcon(0xEBB7); break;     // table
+        case CmdHr: drawIcon(0xEB07); break;        // horizontal-rule
+        case CmdNagOnExit: {
+            // Disk = prompt to save on exit; slashed disk = close silently.
+            // There is no "save-slash" codicon, so the slash is drawn on top.
+            drawIcon(0xEB4B); // save
+            if (!nagOnExit_) {
+                const int cx = (bounds.left + bounds.right) / 2;
+                const int cy = (bounds.top + bounds.bottom) / 2;
+                const int r = scale(8);
+                HPEN pen = CreatePen(PS_SOLID, std::max(1, scale(1)), color);
+                HGDIOBJ previous = SelectObject(dc, pen);
+                MoveToEx(dc, cx - r, cy - r, nullptr);
+                LineTo(dc, cx + r, cy + r);
+                SelectObject(dc, previous);
+                DeleteObject(pen);
             }
-            break;
-        }
-        case CmdNumber: {
-            HGDIOBJ previous = SelectObject(dc, tinyFont_);
-            const wchar_t* digits[] = {L"1", L"2", L"3"};
-            for (int i = -1; i <= 1; ++i) {
-                int y = cy + i * scale(6);
-                RECT digitRect = {cx - ex - scale(1), y - scale(5), cx - scale(2),
-                                  y + scale(5)};
-                DrawTextW(dc, digits[i + 1], 1, &digitRect,
-                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                line(cx - ex + scale(6), y, cx + ex, y, thin, color);
-            }
-            SelectObject(dc, previous);
-            break;
-        }
-        case CmdTask: {
-            RECT box = {cx - ex, cy - scale(4), cx - ex + scale(9), cy + scale(5)};
-            frameRect(dc, box, color);
-            int boxMidX = (box.left + box.right) / 2;
-            line(box.left + scale(2), cy, boxMidX, cy + scale(2), thin, color);
-            line(boxMidX, cy + scale(2), box.right - scale(2), cy - scale(2), thin, color);
-            line(cx + scale(3), cy, cx + ex, cy, thin, color);
-            break;
-        }
-        case CmdQuote: {
-            RECT quoteBar = {cx - ex, cy - ey, cx - ex + thick, cy + ey + scale(1)};
-            fillRect(dc, quoteBar, color);
-            line(cx - ex + scale(5), cy - scale(3), cx + ex, cy - scale(3), thin, color);
-            line(cx - ex + scale(5), cy + scale(3), cx + ex, cy + scale(3), thin, color);
-            break;
-        }
-        case CmdCodeBlock: {
-            RECT block = {cx - ex, cy - ey, cx + ex, cy + ey + scale(1)};
-            fillRect(dc, block, theme_.role(view::ColorRole::InlineCodeBg));
-            drawText(L"{ }", codeGlyphFont_);
-            break;
-        }
-        case CmdLink: {
-            HPEN pen = CreatePen(PS_SOLID, thin, color);
-            HGDIOBJ previousPen = SelectObject(dc, pen);
-            HGDIOBJ previousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            int radius = scale(4);
-            RoundRect(dc, cx - ex, cy - scale(4), cx + scale(1), cy + scale(5), radius,
-                      radius);
-            RoundRect(dc, cx - scale(1), cy - scale(4), cx + ex, cy + scale(5), radius,
-                      radius);
-            SelectObject(dc, previousBrush);
-            SelectObject(dc, previousPen);
-            DeleteObject(pen);
-            break;
-        }
-        case CmdTable: {
-            RECT grid = {cx - ex, cy - ey, cx + ex, cy + ey};
-            frameRect(dc, grid, color);
-            line(grid.left, cy - scale(2), grid.right, cy - scale(2), thin, color);
-            line(cx, grid.top, cx, grid.bottom, thin, color);
-            break;
-        }
-        case CmdHr: {
-            line(cx - ex, cy - scale(6), cx + ex, cy - scale(6), thin,
-                 theme_.role(view::ColorRole::Muted));
-            line(cx - ex, cy, cx + ex, cy, thick, color);
-            line(cx - ex, cy + scale(6), cx + ex, cy + scale(6), thin,
-                 theme_.role(view::ColorRole::Muted));
             break;
         }
         default:

@@ -1691,7 +1691,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_CLOSE:
-            if (!confirmSaveDiscard()) return 0;
+            if (editor_.nagOnExit() && !confirmSaveDiscard()) return 0;
             DestroyWindow(hwnd_);
             return 0;
 

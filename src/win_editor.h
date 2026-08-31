@@ -45,6 +45,10 @@ public:
     // edit mode reloads from disk.
     void discardChanges();
 
+    // Whether closing the app with unsaved changes should prompt to save.
+    // Defaults per document: off for untitled buffers, on for files from disk.
+    bool nagOnExit() const { return nagOnExit_; }
+
     void focusEditor();
 
     void showFindBar(bool show, bool focusReplace);
@@ -98,6 +102,7 @@ private:
     void destroyFonts();
     void applyEditorFormat();
     void updateTooltips();
+    void updateNagTip();
 
     void paint(HDC dc, const RECT& client);
     void paintToolbar(HDC dc, const RECT& client);
@@ -177,15 +182,12 @@ private:
     bool findVisible_ = false;
     bool lastModified_ = false;
     bool suppressChange_ = false;
+    bool nagOnExit_ = false;
 
     HFONT gutterFont_ = nullptr;
     HFONT uiFont_ = nullptr;
-    HFONT boldFont_ = nullptr;
-    HFONT italicFont_ = nullptr;
-    HFONT strikeFont_ = nullptr;
     HFONT smallBoldFont_ = nullptr;
-    HFONT codeGlyphFont_ = nullptr;
-    HFONT tinyFont_ = nullptr;
+    HFONT codiconFont_ = nullptr;
     int gutterCharWidth_ = 8;
     int gutterDigits_ = 3;
 
