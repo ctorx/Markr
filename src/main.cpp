@@ -41,7 +41,8 @@ std::wstring firstCommandLineArgument() {
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     enablePerMonitorDpi();
 
-    INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX controls = {sizeof(controls),
+                                     ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&controls);
 
     app::AppWindow window;

@@ -14,21 +14,30 @@
 namespace app {
 namespace {
 
-const wchar_t* const kAppTitle = L"Simple Markdown Viewer";
+const wchar_t* const kAppTitle = L"Markr";
 const wchar_t* const kProjectUrl = L"https://github.com/ctorx/SimpleMarkDownViewer";
-const wchar_t* const kViewClass = L"SmvDocumentView";
-const wchar_t* const kFrameClass = L"SmvFrameWindow";
+const wchar_t* const kViewClass = L"MarkrDocumentView";
+const wchar_t* const kFrameClass = L"MarkrFrameWindow";
 
 enum Command {
-    ID_FILE_OPEN = 1001,
+    ID_FILE_NEW = 1000,
+    ID_FILE_OPEN,
+    ID_FILE_SAVE,
     ID_FILE_EXIT,
     ID_EDIT_COPY,
+    ID_EDIT_MODE,
+    ID_EDIT_UNDO,
+    ID_EDIT_REDO,
+    ID_EDIT_CUT,
+    ID_EDIT_PASTE,
+    ID_EDIT_SELECTALL,
     ID_ABOUT_PROJECT,
     ID_SEARCH_FIELD,
     ID_SEARCH_BUTTON,
     ID_FIND_NEXT,
     ID_FIND_PREVIOUS,
     ID_FOCUS_SEARCH,
+    ID_FIND_REPLACE,
     ID_VIEW_SCROLLED,
     ID_VIEW_DOCUMENT_CHANGED,
     ID_RELOAD,
@@ -37,6 +46,8 @@ enum Command {
     ID_ZOOM_IN,
     ID_ZOOM_OUT,
     ID_ZOOM_RESET,
+    ID_FORMAT_BOLD,
+    ID_FORMAT_ITALIC,
 };
 
 // Commands on the document's own right-click menu. They stay local to the view:
@@ -237,26 +248,11 @@ std::wstring directoryOf(const std::wstring& path) {
     return (slash == std::wstring::npos) ? std::wstring() : path.substr(0, slash);
 }
 
-const char* const kWelcomeDocument =
-    "# Simple Markdown Viewer\n"
-    "\n"
-    "A fast, read-only viewer for Markdown files.\n"
-    "\n"
-    "## Getting started\n"
-    "\n"
-    "- **Drag a file onto this window**, or **File -> Open** (`Ctrl+O`)\n"
-    "- `Ctrl+F`, or the magnifier at the right of the menu bar, opens the search box\n"
-    "- Press **Enter** or the **Search** button to find; `Esc` closes the box\n"
-    "- `F3` finds the next match, `Shift+F3` the previous one\n"
-    "- Select text with the mouse, then **Edit -> Copy** (`Ctrl+C`)\n"
-    "- Right-click a selection for **Copy Markdown** or **Copy Formatted**\n"
-    "- `F5` reloads; edits made in another editor are picked up automatically\n"
-    "- `Ctrl+scroll` or `Ctrl+plus` / `Ctrl+minus` zooms, `Ctrl+0` resets\n"
-    "- Links to headings and to other Markdown files work; `Alt+Left` goes back\n"
-    "\n"
-    "> The window follows the system light or dark theme and rewraps as you resize it.\n";
-
 } // namespace
+
+std::string readDocumentFile(const std::wstring& path, bool* ok) {
+    return readFileUtf8(path, ok);
+}
 
 // ============================================================ DocumentView
 
@@ -599,7 +595,18 @@ void DocumentView::reload() {
 }
 
 void DocumentView::showWelcome() {
-    setDocument(kWelcomeDocument, std::wstring());
+    // An empty untitled document; the frame opens it in edit mode.
+    setDocument(std::string(), std::wstring());
+}
+
+void DocumentView::showText(std::string utf8, const std::wstring& path) {
+    setDocument(std::move(utf8), path);
+}
+
+void DocumentView::selectAll() {
+    selectionAnchor_ = 0;
+    selectionFocus_ = layout_.text.size();
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void DocumentView::setDocument(std::string utf8, const std::wstring& path) {
@@ -742,8 +749,8 @@ void DocumentView::relayout() {
     metrics.sectionSpacing = scale(20);
     metrics.listIndent = scale(26);
     metrics.quoteIndent = scale(18);
-    metrics.quoteBarWidth = std::max(2, scale(4));
-    metrics.codePadding = scale(10);
+    metrics.quoteBarWidth = std::max(2, scale(5));
+    metrics.codePadding = scale(16);
     metrics.cellPadding = scale(8);
     metrics.ruleThickness = std::max(1, scale(1));
     metrics.checkboxSize = scale(13);
@@ -1083,29 +1090,45 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     wc.lpfnWndProc = &AppWindow::windowProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wc.lpszClassName = kFrameClass;
     if (!RegisterClassExW(&wc)) return false;
     if (!DocumentView::registerWindowClass(instance)) return false;
     if (!OutlinePanel::registerWindowClass(instance)) return false;
+    if (!EditorPane::registerWindowClass(instance)) return false;
 
     theme_ = makeTheme(systemUsesDarkMode());
     WindowState saved = loadWindowState();
     startExpanded_ = saved.outlineExpanded;
     startZoom_ = saved.zoomPercent;
+    startEditorZoom_ = saved.editorZoomPercent;
 
     // The menus stay unattached: the window draws its own strip, because owning
     // the caption means owning everything the system would put beside it.
     fileMenu_ = CreatePopupMenu();
+    AppendMenuW(fileMenu_, MF_STRING, ID_FILE_NEW, L"&New\tCtrl+N");
     AppendMenuW(fileMenu_, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
+    AppendMenuW(fileMenu_, MF_STRING | MF_GRAYED, ID_FILE_SAVE, L"&Save\tCtrl+S");
     AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(fileMenu_, MF_STRING, ID_FILE_EXIT, L"E&xit");
 
     editMenu_ = CreatePopupMenu();
+    AppendMenuW(editMenu_, MF_STRING, ID_EDIT_MODE, L"Edit &Mode\tCtrl+E");
+    AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_EDIT_UNDO, L"&Undo\tCtrl+Z");
+    AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_EDIT_REDO, L"&Redo\tCtrl+Y");
+    AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_EDIT_CUT, L"Cu&t\tCtrl+X");
     AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_EDIT_COPY, L"&Copy\tCtrl+C");
+    AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_EDIT_PASTE, L"&Paste\tCtrl+V");
+    AppendMenuW(editMenu_, MF_STRING, ID_EDIT_SELECTALL, L"Select &All\tCtrl+A");
+    AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(editMenu_, MF_STRING, ID_FOCUS_SEARCH, L"&Find\tCtrl+F");
+    AppendMenuW(editMenu_, MF_STRING | MF_GRAYED, ID_FIND_REPLACE, L"R&eplace\tCtrl+H");
 
     aboutMenu_ = CreatePopupMenu();
-    AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_PROJECT, L"&Simple Markdown Viewer");
+    AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_PROJECT, L"&About Markr");
 
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT, width = 1040, height = 780;
     if (saved.valid) {
@@ -1121,8 +1144,14 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     if (!hwnd_) return false;
 
     ACCEL accelerators[] = {
+        {FVIRTKEY | FCONTROL, 'N', ID_FILE_NEW},
         {FVIRTKEY | FCONTROL, 'O', ID_FILE_OPEN},
+        {FVIRTKEY | FCONTROL, 'S', ID_FILE_SAVE},
+        {FVIRTKEY | FCONTROL, 'E', ID_EDIT_MODE},
         {FVIRTKEY | FCONTROL, 'C', ID_EDIT_COPY},
+        {FVIRTKEY | FCONTROL, 'H', ID_FIND_REPLACE},
+        {FVIRTKEY | FCONTROL, 'B', ID_FORMAT_BOLD},
+        {FVIRTKEY | FCONTROL, 'I', ID_FORMAT_ITALIC},
         {FVIRTKEY | FCONTROL, 'F', ID_FOCUS_SEARCH},
         {FVIRTKEY, VK_F3, ID_FIND_NEXT},
         {FVIRTKEY | FSHIFT, VK_F3, ID_FIND_PREVIOUS},
@@ -1140,12 +1169,14 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     if (!initialFile.empty() && view_.loadFile(initialFile)) {
         updateTitle();
     } else {
-        view_.showWelcome();
+        // No file: start on a fresh untitled document, ready to type into.
+        newDocument();
     }
 
     ShowWindow(hwnd_, saved.maximized ? SW_SHOWMAXIMIZED : showCommand);
     UpdateWindow(hwnd_);
-    SetFocus(view_.hwnd());
+    if (editMode_) editor_.focusEditor();
+    else SetFocus(view_.hwnd());
     return true;
 }
 
@@ -1159,6 +1190,7 @@ void AppWindow::persistWindowState() {
                       (placement.flags & WPF_RESTORETOMAXIMIZED) != 0;
     state.outlineExpanded = outline_.expanded();
     state.zoomPercent = view_.zoomPercent();
+    state.editorZoomPercent = editor_.zoomPercent();
     saveWindowState(state);
 }
 
@@ -1344,6 +1376,12 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
             view_.create(hwnd_, instance_);
             view_.setZoomPercent(startZoom_);
+
+            editor_.create(hwnd_, instance_);
+            editor_.setDpi(dpi_);
+            editor_.setZoomPercent(startEditorZoom_);
+            editor_.setOnModifiedChanged([this]() { updateTitle(); });
+
             applyTheme();
             layoutChildren();
             DragAcceptFiles(hwnd_, TRUE);
@@ -1434,7 +1472,12 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case WM_LBUTTONDOWN: {
             POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             if (chrome_.hitSearchButton(p)) {
-                showSearch(!searchVisible_);
+                if (editMode_) editor_.showFindBar(!editor_.findBarVisible(), false);
+                else showSearch(!searchVisible_);
+                return 0;
+            }
+            if (chrome_.hitEditButton(p)) {
+                setEditMode(!editMode_);
                 return 0;
             }
             if (chrome_.openMenuAt(p)) return 0;
@@ -1453,24 +1496,45 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             break;
 
         case WM_MOUSEWHEEL:
-            return SendMessageW(view_.hwnd(), message, wParam, lParam);
+            return SendMessageW(editMode_ ? editor_.editControl() : view_.hwnd(), message,
+                                wParam, lParam);
 
-        case WM_DROPFILES:
-            // A drop on the frame chrome is treated as a drop on the document.
-            return SendMessageW(view_.hwnd(), message, wParam, lParam);
+        case WM_DROPFILES: {
+            // A drop on the frame chrome (or the editor) runs through the same
+            // open flow as File -> Open, including the unsaved-changes prompt.
+            HDROP drop = reinterpret_cast<HDROP>(wParam);
+            wchar_t path[MAX_PATH * 2] = {0};
+            bool have = DragQueryFileW(drop, 0, path, ARRAYSIZE(path)) > 0;
+            DragFinish(drop);
+            if (have) openPath(path);
+            return 0;
+        }
 
         case WM_INITMENUPOPUP: {
-            bool editHasSelection = false;
+            bool fieldHasSelection = false;
             if (GetFocus() == searchField_) {
                 DWORD start = 0, end = 0;
                 SendMessageW(searchField_, EM_GETSEL, reinterpret_cast<WPARAM>(&start),
                              reinterpret_cast<LPARAM>(&end));
-                editHasSelection = start != end;
+                fieldHasSelection = start != end;
             }
-            EnableMenuItem(editMenu_, ID_EDIT_COPY,
-                           MF_BYCOMMAND |
-                               ((view_.hasSelection() || editHasSelection) ? MF_ENABLED
-                                                                          : MF_GRAYED));
+            bool copyEnabled = fieldHasSelection ||
+                               (editMode_ ? editor_.hasSelection() : view_.hasSelection());
+            auto enable = [](HMENU menu, int id, bool on) {
+                EnableMenuItem(menu, static_cast<UINT>(id),
+                               MF_BYCOMMAND | (on ? MF_ENABLED : MF_GRAYED));
+            };
+            // An untitled document can always be saved (it asks for a path).
+            enable(fileMenu_, ID_FILE_SAVE,
+                   editor_.modified() || editor_.filePath().empty());
+            CheckMenuItem(editMenu_, ID_EDIT_MODE,
+                          MF_BYCOMMAND | (editMode_ ? MF_CHECKED : MF_UNCHECKED));
+            enable(editMenu_, ID_EDIT_UNDO, editMode_ && editor_.canUndo());
+            enable(editMenu_, ID_EDIT_REDO, editMode_ && editor_.canRedo());
+            enable(editMenu_, ID_EDIT_CUT, editMode_ && editor_.hasSelection());
+            enable(editMenu_, ID_EDIT_COPY, copyEnabled);
+            enable(editMenu_, ID_EDIT_PASTE, editMode_ && editor_.canPaste());
+            enable(editMenu_, ID_FIND_REPLACE, editMode_);
             return 0;
         }
 
@@ -1478,15 +1542,59 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             int id = LOWORD(wParam);
             int notification = HIWORD(wParam);
             switch (id) {
+                case ID_FILE_NEW:
+                    if (confirmSaveDiscard()) newDocument();
+                    return 0;
                 case ID_FILE_OPEN:
                     openFileDialog();
                     return 0;
-                case ID_FILE_EXIT:
-                    DestroyWindow(hwnd_);
+                case ID_FILE_SAVE:
+                    saveEditor();
                     return 0;
-                case ID_EDIT_COPY:
-                    if (GetFocus() == searchField_) SendMessageW(searchField_, WM_COPY, 0, 0);
-                    else view_.copySelection();
+                case ID_FILE_EXIT:
+                    PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                    return 0;
+                case ID_EDIT_MODE:
+                    setEditMode(!editMode_);
+                    return 0;
+                case ID_EDIT_COPY: {
+                    HWND focus = GetFocus();
+                    wchar_t className[16] = {0};
+                    if (focus && GetClassNameW(focus, className, ARRAYSIZE(className)) &&
+                        _wcsicmp(className, L"EDIT") == 0) {
+                        SendMessageW(focus, WM_COPY, 0, 0);
+                    } else if (editMode_) {
+                        editor_.copy();
+                    } else {
+                        view_.copySelection();
+                    }
+                    return 0;
+                }
+                case ID_EDIT_UNDO:
+                    if (editMode_) editor_.undo();
+                    return 0;
+                case ID_EDIT_REDO:
+                    if (editMode_) editor_.redo();
+                    return 0;
+                case ID_EDIT_CUT:
+                    if (editMode_) editor_.cut();
+                    return 0;
+                case ID_EDIT_PASTE:
+                    if (editMode_) editor_.paste();
+                    return 0;
+                case ID_EDIT_SELECTALL:
+                    if (editMode_) editor_.selectAll();
+                    else view_.selectAll();
+                    return 0;
+                case ID_FORMAT_BOLD:
+                    if (editMode_) editor_.toggleBold();
+                    return 0;
+                case ID_FORMAT_ITALIC:
+                    if (editMode_) editor_.toggleItalic();
+                    return 0;
+                case ID_FIND_REPLACE:
+                    if (editMode_) editor_.showFindBar(true, true);
+                    else showSearch(true);
                     return 0;
                 case ID_ABOUT_PROJECT:
                     ShellExecuteW(hwnd_, L"open", kProjectUrl, nullptr, nullptr, SW_SHOWNORMAL);
@@ -1495,13 +1603,16 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     if (notification == BN_CLICKED) doSearch(true);
                     return 0;
                 case ID_FIND_NEXT:
-                    doSearch(true);
+                    if (editMode_) editor_.findNext(true);
+                    else doSearch(true);
                     return 0;
                 case ID_FIND_PREVIOUS:
-                    doSearch(false);
+                    if (editMode_) editor_.findNext(false);
+                    else doSearch(false);
                     return 0;
                 case ID_FOCUS_SEARCH:
-                    showSearch(true);
+                    if (editMode_) editor_.showFindBar(true, false);
+                    else showSearch(true);
                     return 0;
                 case ID_SEARCH_FIELD:
                     if (notification == EN_CHANGE && searchFailed_) {
@@ -1517,22 +1628,25 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     updateTitle();
                     return 0;
                 case ID_RELOAD:
-                    view_.reload();
+                    if (!editMode_) view_.reload();
                     return 0;
                 case ID_NAV_BACK:
-                    view_.goBack();
+                    if (!editMode_) view_.goBack();
                     return 0;
                 case ID_NAV_FORWARD:
-                    view_.goForward();
+                    if (!editMode_) view_.goForward();
                     return 0;
                 case ID_ZOOM_IN:
-                    view_.adjustZoom(10);
+                    if (editMode_) editor_.adjustZoom(10);
+                    else view_.adjustZoom(10);
                     return 0;
                 case ID_ZOOM_OUT:
-                    view_.adjustZoom(-10);
+                    if (editMode_) editor_.adjustZoom(-10);
+                    else view_.adjustZoom(-10);
                     return 0;
                 case ID_ZOOM_RESET:
-                    view_.setZoomPercent(100);
+                    if (editMode_) editor_.resetZoom();
+                    else view_.setZoomPercent(100);
                     return 0;
                 default:
                     break;
@@ -1561,6 +1675,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             outline_.setDpi(dpi_);
             chrome_.setDpi(dpi_);
             view_.setDpi(dpi_);
+            editor_.setDpi(dpi_);
 
             RECT* suggested = reinterpret_cast<RECT*>(lParam);
             SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
@@ -1571,7 +1686,13 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_SETFOCUS:
-            SetFocus(view_.hwnd());
+            if (editMode_) editor_.focusEditor();
+            else SetFocus(view_.hwnd());
+            return 0;
+
+        case WM_CLOSE:
+            if (!confirmSaveDiscard()) return 0;
+            DestroyWindow(hwnd_);
             return 0;
 
         case WM_DESTROY:
@@ -1633,6 +1754,13 @@ void AppWindow::layoutChildren() {
     const int gap = scale(10);
     const int chromeTop = chrome_.height();
     const int bar = barHeight();
+
+    if (editMode_) {
+        MoveWindow(editor_.hwnd(), 0, chromeTop, client.right,
+                   std::max(0, static_cast<int>(client.bottom) - chromeTop), TRUE);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
 
     if (searchVisible_) {
         const int fieldHeight = bar - pad * 2;
@@ -1720,6 +1848,7 @@ void AppWindow::applyTheme() {
     if (fieldBrush_) DeleteObject(fieldBrush_);
     fieldBrush_ = CreateSolidBrush(theme_.fieldBackground);
     view_.setTheme(theme_);
+    editor_.setTheme(theme_);
     outline_.setTheme(theme_);
     chrome_.setTheme(theme_);
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -1740,13 +1869,140 @@ void AppWindow::openFileDialog() {
     ofn.lpstrTitle = L"Open Markdown File";
 
     if (!GetOpenFileNameW(&ofn)) return;
-    if (!view_.loadFile(path)) {
+    openPath(path);
+}
+
+void AppWindow::openPath(const std::wstring& path) {
+    if (!confirmSaveDiscard()) return;
+
+    bool ok = false;
+    std::string utf8 = readDocumentFile(path, &ok);
+    if (!ok) {
         MessageBoxW(hwnd_, L"That file could not be opened.", kAppTitle, MB_ICONWARNING | MB_OK);
         return;
     }
+    if (editMode_) {
+        editor_.setContent(view::toWide(utf8), path);
+        editor_.focusEditor();
+    }
+    view_.showText(std::move(utf8), path);
     searchFailed_ = false;
     updateTitle();
-    SetFocus(view_.hwnd());
+    if (!editMode_) SetFocus(view_.hwnd());
+}
+
+void AppWindow::setEditMode(bool on) {
+    if (on == editMode_) return;
+
+    if (on) {
+        const std::wstring& path = view_.filePath();
+        // Keep an unsaved buffer for this file, and always keep the buffer of
+        // an untitled document (there is no disk copy to reload). Anything
+        // else starts fresh from disk, after settling changes that belong to a
+        // different file.
+        bool keepBuffer = path.empty() || (editor_.filePath() == path && editor_.modified());
+        if (!keepBuffer) {
+            if (!confirmSaveDiscard()) return;
+            bool ok = false;
+            std::string utf8 = readDocumentFile(path, &ok);
+            if (!ok) {
+                MessageBoxW(hwnd_, L"That file could not be opened for editing.", kAppTitle,
+                            MB_ICONWARNING | MB_OK);
+                return;
+            }
+            editor_.setContent(view::toWide(utf8), path);
+        }
+        showSearch(false);
+        editMode_ = true;
+        ShowWindow(outline_.hwnd(), SW_HIDE);
+        ShowWindow(view_.hwnd(), SW_HIDE);
+        ShowWindow(editor_.hwnd(), SW_SHOW);
+        editor_.focusEditor();
+    } else {
+        editMode_ = false;
+        // Render the buffer as it stands, saved or not.
+        if (editor_.modified()) {
+            view_.showText(view::toUtf8(editor_.content()), editor_.filePath());
+        }
+        ShowWindow(editor_.hwnd(), SW_HIDE);
+        ShowWindow(view_.hwnd(), SW_SHOW);
+        ShowWindow(outline_.hwnd(), SW_SHOW);
+        refreshOutline();
+        SetFocus(view_.hwnd());
+    }
+
+    chrome_.setEditActive(editMode_);
+    layoutChildren();
+    updateTitle();
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void AppWindow::newDocument() {
+    editor_.setContent(std::wstring(), std::wstring());
+    view_.showText(std::string(), std::wstring());
+    // A blank document has nothing to view; open it ready to type into.
+    if (!editMode_) setEditMode(true);
+    else editor_.focusEditor();
+    searchFailed_ = false;
+    updateTitle();
+}
+
+void AppWindow::saveEditor() {
+    // A titled, unchanged buffer has nothing to write. An untitled document
+    // always goes through the dialog so a deliberate Ctrl+S can create it.
+    if (!editor_.modified() && !editor_.filePath().empty()) return;
+    saveEditorInternal();
+}
+
+bool AppWindow::saveEditorInternal() {
+    std::wstring target = editor_.filePath();
+    if (target.empty()) {
+        wchar_t path[MAX_PATH * 2] = {0};
+        OPENFILENAMEW ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = hwnd_;
+        ofn.lpstrFilter = L"Markdown files\0*.md;*.markdown;*.mdown;*.mkd;*.mdtxt;*.text\0"
+                          L"Text files\0*.txt\0All files\0*.*\0";
+        ofn.lpstrFile = path;
+        ofn.nMaxFile = ARRAYSIZE(path);
+        ofn.lpstrDefExt = L"md";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
+        ofn.lpstrTitle = L"Save Markdown File";
+        if (!GetSaveFileNameW(&ofn)) return false;
+        target = path;
+    }
+
+    if (!editor_.saveTo(target)) {
+        MessageBoxW(hwnd_, L"The file could not be saved.", kAppTitle, MB_ICONWARNING | MB_OK);
+        return false;
+    }
+
+    if (view_.filePath() != target) {
+        // The document just gained its name (Save As): point the view at it.
+        view_.showText(view::toUtf8(editor_.content()), target);
+    } else if (!editMode_) {
+        // In view mode the on-screen document may predate the buffer.
+        view_.reload();
+    }
+    updateTitle();
+    return true;
+}
+
+bool AppWindow::confirmSaveDiscard() {
+    if (!editor_.modified()) return true;
+
+    const std::wstring& path = editor_.filePath();
+    size_t slash = path.find_last_of(L"\\/");
+    std::wstring name = path.empty()
+                            ? std::wstring(L"Untitled")
+                            : (slash == std::wstring::npos ? path : path.substr(slash + 1));
+    std::wstring message = L"Save changes to " + name + L"?";
+    int choice =
+        MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_YESNOCANCEL | MB_ICONWARNING);
+    if (choice == IDCANCEL) return false;
+    if (choice == IDYES) return saveEditorInternal();
+    editor_.discardChanges();
+    return true;
 }
 
 void AppWindow::doSearch(bool forward) {
@@ -1768,13 +2024,13 @@ void AppWindow::doSearch(bool forward) {
 }
 
 void AppWindow::updateTitle() {
-    const std::wstring& path = view_.filePath();
-    std::wstring title = kAppTitle;
-    if (!path.empty()) {
-        size_t slash = path.find_last_of(L"\\/");
-        std::wstring name = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
-        title = name + L" - " + kAppTitle;
-    }
+    const std::wstring& path = editMode_ ? editor_.filePath() : view_.filePath();
+    size_t slash = path.find_last_of(L"\\/");
+    std::wstring name = path.empty()
+                            ? std::wstring(L"Untitled")
+                            : (slash == std::wstring::npos ? path : path.substr(slash + 1));
+    if (editor_.modified() && editor_.filePath() == path) name += L"*";
+    std::wstring title = name + L" - " + kAppTitle;
     // The window text still drives the taskbar and Alt+Tab; the caption strip is
     // drawn from the same string.
     SetWindowTextW(hwnd_, title.c_str());

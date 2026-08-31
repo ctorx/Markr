@@ -17,20 +17,22 @@ struct FontSpec {
     bool monospace;
 };
 
-// Sizes are in tenths of a point; converted with the current DPI.
+// Sizes are in tenths of a point; converted with the current DPI. The scale
+// mirrors VS Code's markdown preview: a 14px (10.5pt) body with headings at
+// 2em / 1.5em / 1.25em / 1em / 0.875em / 0.85em, all weight 600.
 const FontSpec kSpecs[static_cast<int>(FontId::Count)] = {
-    {L"Segoe UI", 110, FW_NORMAL, false, false},    // Body
-    {L"Segoe UI", 110, FW_SEMIBOLD, false, false},  // BodyBold
-    {L"Segoe UI", 110, FW_NORMAL, true, false},     // BodyItalic
-    {L"Segoe UI", 110, FW_SEMIBOLD, true, false},   // BodyBoldItalic
+    {L"Segoe UI", 105, FW_NORMAL, false, false},    // Body
+    {L"Segoe UI", 105, FW_BOLD, false, false},      // BodyBold
+    {L"Segoe UI", 105, FW_NORMAL, true, false},     // BodyItalic
+    {L"Segoe UI", 105, FW_BOLD, true, false},       // BodyBoldItalic
     {nullptr, 105, FW_NORMAL, false, true},         // Code
     {nullptr, 105, FW_BOLD, false, true},           // CodeBold
-    {L"Segoe UI", 230, FW_SEMIBOLD, false, false},  // H1
-    {L"Segoe UI", 185, FW_SEMIBOLD, false, false},  // H2
-    {L"Segoe UI", 155, FW_SEMIBOLD, false, false},  // H3
-    {L"Segoe UI", 135, FW_SEMIBOLD, false, false},  // H4
-    {L"Segoe UI", 120, FW_SEMIBOLD, false, false},  // H5
-    {L"Segoe UI", 110, FW_SEMIBOLD, false, false},  // H6
+    {L"Segoe UI", 210, FW_SEMIBOLD, false, false},  // H1
+    {L"Segoe UI", 158, FW_SEMIBOLD, false, false},  // H2
+    {L"Segoe UI", 131, FW_SEMIBOLD, false, false},  // H3
+    {L"Segoe UI", 105, FW_SEMIBOLD, false, false},  // H4
+    {L"Segoe UI", 92, FW_SEMIBOLD, false, false},   // H5
+    {L"Segoe UI", 89, FW_SEMIBOLD, false, false},   // H6
     {L"Segoe UI", 85, FW_NORMAL, false, false},     // Small
     {L"Segoe UI", 85, FW_SEMIBOLD, false, false},   // SmallBold
 };
@@ -54,8 +56,9 @@ bool fontExists(const wchar_t* family) {
 const wchar_t* monospaceFamily() {
     static const wchar_t* cached = nullptr;
     if (!cached) {
-        if (fontExists(L"Cascadia Mono")) cached = L"Cascadia Mono";
-        else if (fontExists(L"Consolas")) cached = L"Consolas";
+        // Consolas is VS Code's default editor font on Windows.
+        if (fontExists(L"Consolas")) cached = L"Consolas";
+        else if (fontExists(L"Cascadia Mono")) cached = L"Cascadia Mono";
         else cached = L"Courier New";
     }
     return cached;

@@ -54,6 +54,11 @@ public:
     bool hitSearchButton(POINT clientPoint) const;
     void setSearchActive(bool active);
 
+    // Pencil button beside the magnifier: toggles edit mode.
+    RECT editButtonRect() const;
+    bool hitEditButton(POINT clientPoint) const;
+    void setEditActive(bool active);
+
     // Menu strip interaction. Both return true when the click/key was consumed.
     bool openMenuAt(POINT clientPoint);
     bool openMenuForMnemonic(wchar_t character);
@@ -85,12 +90,15 @@ private:
     HFONT menuFont_ = nullptr;
 
     void drawMagnifier(HDC dc, const RECT& button, COLORREF color) const;
+    void drawPencil(HDC dc, const RECT& button, COLORREF color) const;
 
     std::vector<MenuItem> items_;
     int openItem_ = -1;
     int hotItem_ = -1;
     bool hotSearch_ = false;
     bool searchActive_ = false;
+    bool hotEdit_ = false;
+    bool editActive_ = false;
     LRESULT hot_ = HTNOWHERE;
     LRESULT pressed_ = HTNOWHERE;
 };

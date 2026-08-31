@@ -1,15 +1,30 @@
-# Simple Markdown Viewer
+# Markr
 
-A fast, read-only Markdown viewer for Windows. Native C++ and Win32/GDI, no
+A fast Markdown viewer and editor for Windows. Native C++ and Win32/GDI, no
 frameworks and no runtime dependencies — the build produces one self-contained
 `.exe` that starts in well under a second.
 
-It renders Markdown; it never shows the source and never lets you edit it.
+It opens in a rendered reading view; a single toggle (`Ctrl+E` or the pencil on
+the menu bar) switches to a plain-text editor and back.
 
 ## Features
 
 - **Full Markdown rendering** — CommonMark plus the GitHub extensions
   (see the table below)
+- **Edit mode** — `Ctrl+E` toggles a source editor: multi-level undo/redo,
+  cut/copy/paste, line numbers, `Ln, Col` in the footer, find and replace, and
+  a toolbar that applies Markdown formatting (bold, italic, strikethrough,
+  highlight, code, headings, lists, task lists, quotes, code blocks, links,
+  tables, rules) to the selection. `Ctrl+S` saves (an untitled document asks
+  where); opening a file starts in the view, and switching back from the
+  editor re-renders your unsaved buffer
+- **Live source styling** — the editor colours Markdown as you type, matching
+  VS Code's default Dark+/Light+ markdown look (Consolas, blue bold headings
+  and `**bold**`, purple italics, raw-code orange, coloured list and quote
+  markers), and fenced code blocks get real syntax highlighting via the same
+  lexers the view uses. Editor zoom is remembered separately from view zoom
+- **Untitled documents** — launching without a file, or `File → New`, opens a
+  blank in-memory document in edit mode that you can save whenever (or never)
 - **Syntax highlighting** in fenced code blocks, for the languages listed below
 - **Drop a file on the window** to open it
 - **Reloads on change** — edit in another editor and the view follows, keeping
@@ -18,7 +33,9 @@ It renders Markdown; it never shows the source and never lets you edit it.
   `Alt+Left` / the mouse back button to retrace
 - **Zoom** — `Ctrl`+scroll or `Ctrl`+`+`/`-`, remembered between runs
 - **Follows the system theme** — light and dark, switching live when Windows does,
-  title bar and menu strip included
+  title bar and menu strip included. The rendered document matches VS Code's
+  markdown preview under the default Light+/Dark+ themes (typography, colours,
+  and editor-theme token colours in fenced code)
 - **Resize grip** in the bottom-right corner, and the usual drag borders
 - **Reflows on resize** — narrowing the window rewraps the text; there is never a
   horizontal scrollbar, not even for long code lines or wide tables
@@ -85,10 +102,10 @@ Requires Visual Studio (or the Build Tools) with **Desktop development with C++*
 No other dependencies.
 
 ```powershell
-.\build.ps1                    # run the tests, then build build\SimpleMarkdownViewer.exe
+.\build.ps1                    # run the tests, then build build\Markr.exe
 .\build.ps1 -SkipTests         # build only
 .\build.ps1 -DebugBuild        # unoptimised build with debug info
-.\build.ps1 -Output C:\Tools\smv.exe -Run
+.\build.ps1 -Output C:\Tools\Markr.exe -Run
 ```
 
 The script locates the toolchain itself (`vswhere`, then well-known install
@@ -118,6 +135,11 @@ cross-file links — open them after a change to eyeball the result.
 | Action | How |
 | --- | --- |
 | Open a file | drop it on the window, `File → Open`, `Ctrl+O`, or pass a path on the command line |
+| New document | `Ctrl+N` or `File → New` — an untitled buffer in edit mode; launching with no file starts the same way. Unsaved changes prompt first |
+| Edit / view | `Ctrl+E`, the marker button on the menu bar, or `Edit → Edit Mode` |
+| Save (edit mode) | `Ctrl+S` or `File → Save`; unsaved changes prompt before close or open |
+| Format (edit mode) | toolbar buttons, `Ctrl+B` bold, `Ctrl+I` italic |
+| Find and replace (edit mode) | `Ctrl+H`, or `Ctrl+F` then Tab to the Replace field |
 | Reload | `F5` (external edits are picked up on their own, within a second) |
 | Zoom | `Ctrl`+scroll, `Ctrl`+`+` / `Ctrl`+`-`, `Ctrl`+`0` to reset |
 | Follow a link | click it — headings and other Markdown files open in place, everything else in your browser |
@@ -130,7 +152,7 @@ cross-file links — open them after a change to eyeball the result.
 | Find next / previous | `F3` / `Shift+F3` (also `Enter` / `Shift+Enter` in the box) |
 | Close the search box | `Esc`, or the magnifier again |
 | Scroll | wheel, scrollbar, arrows, `PgUp`/`PgDn`, `Home`/`End` |
-| Project page | `About → Simple Markdown Viewer` |
+| Project page | `About → About Markr` |
 
 ## Layout of the source
 
@@ -147,13 +169,16 @@ src\win_text.*      GDI font cache (text measurement) and WIC image loading
 src\win_chrome.*    custom title bar (padded caption + buttons) and menu strip
 src\win_outline.*   collapsible heading-outline panel
 src\win_settings.*  window placement and panel state persistence (HKCU)
+src\win_editor.*    edit mode: toolbar, line-number gutter, find/replace, status footer
 src\win_viewer.*    document view window and the frame that hosts menu + search bar
 src\main.cpp        entry point
+src\markr.rc        resources (the application icon, assets\markr.ico)
 ```
 
-Window placement, outline state and zoom live in
-`HKCU\Software\Simple Markdown Viewer`; delete that key to get the defaults
-back. The outline starts collapsed on first run.
+Window placement, outline state and zoom live in `HKCU\Software\Markr`
+(settings written by older builds under `Software\Simple Markdown Viewer` are
+read once as a fallback); delete the key to get the defaults back. The outline
+starts collapsed on first run.
 
 The open document is polled once a second for external edits — a single
 `GetFileAttributesEx` call, so an idle viewer costs nothing measurable.

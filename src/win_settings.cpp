@@ -3,7 +3,10 @@
 namespace app {
 namespace {
 
-const wchar_t* const kKeyPath = L"Software\\Simple Markdown Viewer";
+const wchar_t* const kKeyPath = L"Software\\Markr";
+// Settings written by builds before the rename; read once when the new key is
+// missing so nothing is lost on upgrade.
+const wchar_t* const kLegacyKeyPath = L"Software\\Simple Markdown Viewer";
 
 bool readDword(HKEY key, const wchar_t* name, DWORD* value) {
     DWORD size = sizeof(DWORD);
@@ -30,13 +33,20 @@ WindowState loadWindowState() {
     WindowState state;
 
     HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kKeyPath, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kKeyPath, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS &&
+        RegOpenKeyExW(HKEY_CURRENT_USER, kLegacyKeyPath, 0, KEY_QUERY_VALUE, &key) !=
+            ERROR_SUCCESS) {
         return state;
     }
 
     DWORD left = 0, top = 0, width = 0, height = 0, maximized = 0, outline = 0, zoom = 0;
     if (readDword(key, L"ZoomPercent", &zoom) && zoom >= 50 && zoom <= 300) {
         state.zoomPercent = static_cast<int>(zoom);
+    }
+    DWORD editorZoom = 0;
+    if (readDword(key, L"EditorZoomPercent", &editorZoom) && editorZoom >= 50 &&
+        editorZoom <= 300) {
+        state.editorZoomPercent = static_cast<int>(editorZoom);
     }
     bool haveAll = readDword(key, L"WindowLeft", &left) && readDword(key, L"WindowTop", &top) &&
                    readDword(key, L"WindowWidth", &width) &&
@@ -70,6 +80,7 @@ void saveWindowState(const WindowState& state) {
     writeDword(key, L"WindowMaximized", state.maximized ? 1 : 0);
     writeDword(key, L"OutlineExpanded", state.outlineExpanded ? 1 : 0);
     writeDword(key, L"ZoomPercent", static_cast<DWORD>(state.zoomPercent));
+    writeDword(key, L"EditorZoomPercent", static_cast<DWORD>(state.editorZoomPercent));
     RegCloseKey(key);
 }
 

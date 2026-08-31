@@ -7,6 +7,7 @@
 #include "md_types.h"
 #include "search.h"
 #include "win_chrome.h"
+#include "win_editor.h"
 #include "win_outline.h"
 #include "win_settings.h"
 #include "win_text.h"
@@ -18,6 +19,9 @@
 
 namespace app {
 
+// Reads a document as UTF-8, honouring the common byte order marks.
+std::string readDocumentFile(const std::wstring& path, bool* ok);
+
 class DocumentView {
 public:
     static bool registerWindowClass(HINSTANCE instance);
@@ -28,7 +32,11 @@ public:
     bool loadFile(const std::wstring& path);
     void showWelcome();
     void reload();
+    // Renders text that is not (yet) on disk — the editor's unsaved buffer.
+    void showText(std::string utf8, const std::wstring& path);
     const std::wstring& filePath() const { return path_; }
+
+    void selectAll();
 
     void setTheme(const Theme& theme);
     void setDpi(int dpi);
@@ -141,10 +149,20 @@ private:
     void paintChrome(HDC dc);
     void applyTheme();
     void openFileDialog();
+    void openPath(const std::wstring& path);
     void doSearch(bool forward);
     void updateTitle();
     void refreshOutline();
     void persistWindowState();
+    void setEditMode(bool on);
+    // A fresh untitled in-memory document, opened in edit mode.
+    void newDocument();
+    void saveEditor();
+    // Writes the buffer; asks for a path first when the document is untitled.
+    // False when the user cancels the dialog or the write fails.
+    bool saveEditorInternal();
+    // False when the user cancels; saves or discards pending editor changes.
+    bool confirmSaveDiscard();
     // The search bar starts collapsed; the magnifier and Ctrl+F reveal it.
     void showSearch(bool show);
     int barHeight() const;
@@ -164,12 +182,15 @@ private:
     HBRUSH fieldBrush_ = nullptr;
 
     DocumentView view_;
+    EditorPane editor_;
     OutlinePanel outline_;
     WindowChrome chrome_;
     Theme theme_;
     int dpi_ = 96;
+    bool editMode_ = false;
     bool startExpanded_ = false;
     int startZoom_ = 100;
+    int startEditorZoom_ = 100;
     bool searchVisible_ = false;
     bool searchFailed_ = false;
     bool buttonHot_ = false;

@@ -296,6 +296,12 @@ void WindowChrome::paint(HDC dc, const RECT& client) const {
     }
     drawMagnifier(dc, search, searchActive_ ? theme_.role(view::ColorRole::Link)
                                             : theme_.menuText);
+
+    RECT edit = editButtonRect();
+    if (editActive_ || hotEdit_) {
+        fillRect(dc, edit, editActive_ ? theme_.menuHot : theme_.captionButtonHot);
+    }
+    drawPencil(dc, edit, editActive_ ? theme_.role(view::ColorRole::Link) : theme_.menuText);
 }
 
 void WindowChrome::paintResizeGrip(HDC dc, const RECT& client) const {
@@ -364,6 +370,24 @@ void WindowChrome::setSearchActive(bool active) {
     if (frame_) InvalidateRect(frame_, nullptr, FALSE);
 }
 
+RECT WindowChrome::editButtonRect() const {
+    RECT search = searchButtonRect();
+    int width = search.right - search.left;
+    int gap = scale(4);
+    return RECT{search.left - gap - width, search.top, search.left - gap, search.bottom};
+}
+
+bool WindowChrome::hitEditButton(POINT clientPoint) const {
+    RECT bounds = editButtonRect();
+    return PtInRect(&bounds, clientPoint) != FALSE;
+}
+
+void WindowChrome::setEditActive(bool active) {
+    if (editActive_ == active) return;
+    editActive_ = active;
+    if (frame_) InvalidateRect(frame_, nullptr, FALSE);
+}
+
 bool WindowChrome::updateMenuHover(POINT clientPoint) {
     int found = -1;
     for (size_t i = 0; i < items_.size(); ++i) {
@@ -373,9 +397,11 @@ bool WindowChrome::updateMenuHover(POINT clientPoint) {
         }
     }
     bool overSearch = hitSearchButton(clientPoint);
-    if (found == hotItem_ && overSearch == hotSearch_) return false;
+    bool overEdit = hitEditButton(clientPoint);
+    if (found == hotItem_ && overSearch == hotSearch_ && overEdit == hotEdit_) return false;
     hotItem_ = found;
     hotSearch_ = overSearch;
+    hotEdit_ = overEdit;
     return true;
 }
 
@@ -401,6 +427,42 @@ void WindowChrome::drawMagnifier(HDC dc, const RECT& button, COLORREF color) con
     SelectObject(dc, previousBrush);
     SelectObject(dc, previousPen);
     DeleteObject(pen);
+}
+
+void WindowChrome::drawPencil(HDC dc, const RECT& button, COLORREF color) const {
+    // A small filled marker, echoing the application icon: diagonal body,
+    // chisel tip pointing to the lower left, and an ink stroke beneath.
+    int centreX = (button.left + button.right) / 2;
+    int centreY = (button.top + button.bottom) / 2 - scale(2);
+
+    HBRUSH brush = CreateSolidBrush(color);
+    HGDIOBJ previousBrush = SelectObject(dc, brush);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ previousPen = SelectObject(dc, pen);
+
+    POINT body[4] = {
+        {centreX + scale(2), centreY - scale(7)},
+        {centreX + scale(6), centreY - scale(3)},
+        {centreX - scale(1), centreY + scale(4)},
+        {centreX - scale(5), centreY + scale(0)},
+    };
+    Polygon(dc, body, 4);
+
+    POINT tip[3] = {
+        {centreX - scale(4), centreY + scale(1)},
+        {centreX - scale(1), centreY + scale(4)},
+        {centreX - scale(7), centreY + scale(7)},
+    };
+    Polygon(dc, tip, 3);
+
+    RECT stroke = {centreX - scale(7), centreY + scale(8), centreX + scale(4),
+                   centreY + scale(8) + std::max(2, scale(2))};
+    fillRect(dc, stroke, color);
+
+    SelectObject(dc, previousPen);
+    SelectObject(dc, previousBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
 }
 
 bool WindowChrome::openMenuAt(POINT clientPoint) {

@@ -1,9 +1,9 @@
-# Builds Simple Markdown Viewer into a single self-contained EXE.
+# Builds Markr into a single self-contained EXE.
 #
-#   .\build.ps1                 # run tests, then build build\SimpleMarkdownViewer.exe
+#   .\build.ps1                 # run tests, then build build\Markr.exe
 #   .\build.ps1 -SkipTests      # build only
 #   .\build.ps1 -DebugBuild     # unoptimised build with debug info
-#   .\build.ps1 -Output C:\Tools\smv.exe
+#   .\build.ps1 -Output C:\Tools\Markr.exe
 [CmdletBinding()]
 param(
     [switch]$SkipTests,
@@ -29,7 +29,7 @@ $buildDir = Join-Path $root 'build'
 $objDir = Join-Path $buildDir 'obj'
 New-Item -ItemType Directory -Force -Path $objDir | Out-Null
 
-if (-not $Output) { $Output = Join-Path $buildDir 'SimpleMarkdownViewer.exe' }
+if (-not $Output) { $Output = Join-Path $buildDir 'Markr.exe' }
 $outputDir = Split-Path -Parent $Output
 if ($outputDir -and -not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
@@ -40,6 +40,7 @@ if ($outputDir -and -not (Test-Path $outputDir)) {
 $sources = @(
     'src\main.cpp',
     'src\win_viewer.cpp',
+    'src\win_editor.cpp',
     'src\win_chrome.cpp',
     'src\win_outline.cpp',
     'src\win_settings.cpp',
@@ -77,9 +78,13 @@ $libs = @(
 $link = @('/link', '/SUBSYSTEM:WINDOWS', '/MANIFEST:EMBED', '/MANIFESTUAC:NO',
           '/INCREMENTAL:NO') + $linkFlags + $libs
 
+$resource = Join-Path $objDir 'markr.res'
+& rc.exe /nologo /fo $resource (Join-Path $root 'src\markr.rc')
+if ($LASTEXITCODE -ne 0) { throw "Resource compilation failed ($LASTEXITCODE)." }
+
 Write-Host "Compiling $(Split-Path -Leaf $Output)..." -ForegroundColor Cyan
 $log = Join-Path $buildDir 'build.log'
-& cl.exe @compileFlags @sources @link > $log 2>&1
+& cl.exe @compileFlags @sources $resource @link > $log 2>&1
 $code = $LASTEXITCODE
 Get-Content $log | Where-Object {
     $_ -notmatch '^\w[\w.]*\.cpp$' -and $_ -ne 'Generating Code...' -and $_ -notmatch '^\s*$'

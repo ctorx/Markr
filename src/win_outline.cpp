@@ -6,13 +6,13 @@
 namespace app {
 namespace {
 
-const wchar_t* const kOutlineClass = L"SmvOutlinePanel";
+const wchar_t* const kOutlineClass = L"MarkrOutlinePanel";
 
 // Padding used both when collapsed and expanded.
-constexpr int kPadding = 10;
+constexpr int kPadding = 14;
 constexpr int kButtonSize = 28;
-constexpr int kExpandedWidth = 280;
-constexpr int kIndentPerLevel = 14;
+constexpr int kExpandedWidth = 300;
+constexpr int kIndentPerLevel = 16;
 // Indentation stops growing past this depth so deep headings keep their width.
 constexpr int kMaxIndentLevel = 4;
 
@@ -29,7 +29,7 @@ const LevelFontSpec kLevelFonts[3] = {
 };
 
 // Vertical padding added to the font height for each bucket's row.
-const int kRowPadding[3] = {14, 10, 8};
+const int kRowPadding[3] = {18, 14, 12};
 
 void fillRect(HDC dc, const RECT& rect, COLORREF color) {
     SetDCBrushColor(dc, color);

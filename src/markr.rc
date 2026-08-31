@@ -1,0 +1,3 @@
+// Application resources. Icon id 1 is what Explorer picks up for the .exe and
+// what the window class loads at runtime.
+1 ICON "..\\assets\\markr.ico"

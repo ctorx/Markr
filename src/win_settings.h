@@ -10,6 +10,7 @@ struct WindowState {
     bool maximized = false;
     bool outlineExpanded = false;
     int zoomPercent = 100;
+    int editorZoomPercent = 100;
     bool valid = false; // false when nothing usable was stored
 };
 

@@ -23,38 +23,40 @@ Theme makeTheme(bool dark) {
     Theme t;
     t.dark = dark;
 
+    // The document palette matches VS Code's markdown preview under the
+    // default Light+ / Dark+ themes (editor colours plus markdown.css).
     if (!dark) {
         t.background = RGB(255, 255, 255);
         set(t, ColorRole::None, RGB(255, 255, 255));
-        set(t, ColorRole::Text, RGB(31, 35, 40));
-        set(t, ColorRole::Muted, RGB(101, 109, 118));
-        set(t, ColorRole::Heading, RGB(20, 24, 30));
-        set(t, ColorRole::Link, RGB(9, 105, 218));
-        set(t, ColorRole::CodeText, RGB(31, 35, 40));
-        set(t, ColorRole::CodeBg, RGB(246, 248, 250));
-        set(t, ColorRole::QuoteText, RGB(87, 96, 106));
-        set(t, ColorRole::QuoteBar, RGB(208, 215, 222));
-        set(t, ColorRole::Rule, RGB(216, 222, 228));
-        set(t, ColorRole::TableBorder, RGB(208, 215, 222));
-        set(t, ColorRole::TableHeaderBg, RGB(246, 248, 250));
-        set(t, ColorRole::MarkBg, RGB(255, 248, 197));
-        set(t, ColorRole::MarkText, RGB(31, 35, 40));
-        set(t, ColorRole::InlineCodeBg, RGB(239, 241, 243));
-        set(t, ColorRole::Checkbox, RGB(101, 109, 118));
+        set(t, ColorRole::Text, RGB(0, 0, 0));
+        set(t, ColorRole::Muted, RGB(110, 110, 110));
+        set(t, ColorRole::Heading, RGB(0, 0, 0));
+        set(t, ColorRole::Link, RGB(0, 106, 177));
+        set(t, ColorRole::CodeText, RGB(0, 0, 0));
+        set(t, ColorRole::CodeBg, RGB(241, 241, 241));
+        set(t, ColorRole::QuoteText, RGB(0, 0, 0));
+        set(t, ColorRole::QuoteBar, RGB(128, 189, 230));
+        set(t, ColorRole::Rule, RGB(209, 209, 209));
+        set(t, ColorRole::TableBorder, RGB(209, 209, 209));
+        set(t, ColorRole::TableHeaderBg, RGB(255, 255, 255));
+        set(t, ColorRole::MarkBg, RGB(255, 255, 0));
+        set(t, ColorRole::MarkText, RGB(0, 0, 0));
+        set(t, ColorRole::InlineCodeBg, RGB(229, 229, 229));
+        set(t, ColorRole::Checkbox, RGB(110, 110, 110));
 
-        set(t, ColorRole::CodeKeyword, RGB(207, 34, 46));
-        set(t, ColorRole::CodeType, RGB(149, 56, 0));
-        set(t, ColorRole::CodeString, RGB(10, 48, 105));
-        set(t, ColorRole::CodeNumber, RGB(5, 80, 174));
-        set(t, ColorRole::CodeComment, RGB(110, 119, 129));
-        set(t, ColorRole::CodeDirective, RGB(130, 80, 223));
-        set(t, ColorRole::CodeTag, RGB(17, 99, 41));
-        set(t, ColorRole::CodeAttribute, RGB(5, 80, 174));
-        set(t, ColorRole::CodeFunction, RGB(130, 80, 223));
+        set(t, ColorRole::CodeKeyword, RGB(0, 0, 255));
+        set(t, ColorRole::CodeType, RGB(38, 127, 153));
+        set(t, ColorRole::CodeString, RGB(163, 21, 21));
+        set(t, ColorRole::CodeNumber, RGB(9, 134, 88));
+        set(t, ColorRole::CodeComment, RGB(0, 128, 0));
+        set(t, ColorRole::CodeDirective, RGB(175, 0, 219));
+        set(t, ColorRole::CodeTag, RGB(128, 0, 0));
+        set(t, ColorRole::CodeAttribute, RGB(229, 0, 0));
+        set(t, ColorRole::CodeFunction, RGB(121, 94, 38));
 
-        t.selection = RGB(184, 213, 250);
-        t.searchHighlight = RGB(255, 240, 160);
-        t.searchCurrent = RGB(255, 186, 61);
+        t.selection = RGB(173, 214, 255);
+        t.searchHighlight = RGB(248, 201, 171);
+        t.searchCurrent = RGB(168, 172, 148);
 
         t.barBackground = RGB(243, 243, 243);
         t.barBorder = RGB(205, 205, 205);
@@ -79,37 +81,37 @@ Theme makeTheme(bool dark) {
         return t;
     }
 
-    t.background = RGB(13, 17, 23);
-    set(t, ColorRole::None, RGB(13, 17, 23));
-    set(t, ColorRole::Text, RGB(230, 237, 243));
-    set(t, ColorRole::Muted, RGB(139, 148, 158));
-    set(t, ColorRole::Heading, RGB(240, 246, 252));
-    set(t, ColorRole::Link, RGB(88, 166, 255));
-    set(t, ColorRole::CodeText, RGB(230, 237, 243));
-    set(t, ColorRole::CodeBg, RGB(22, 27, 34));
-    set(t, ColorRole::QuoteText, RGB(158, 167, 179));
-    set(t, ColorRole::QuoteBar, RGB(61, 68, 77));
-    set(t, ColorRole::Rule, RGB(48, 54, 61));
-    set(t, ColorRole::TableBorder, RGB(48, 54, 61));
-    set(t, ColorRole::TableHeaderBg, RGB(22, 27, 34));
-    set(t, ColorRole::MarkBg, RGB(88, 74, 26));
-    set(t, ColorRole::MarkText, RGB(240, 246, 252));
-    set(t, ColorRole::InlineCodeBg, RGB(38, 44, 54));
-    set(t, ColorRole::Checkbox, RGB(139, 148, 158));
+    t.background = RGB(30, 30, 30);
+    set(t, ColorRole::None, RGB(30, 30, 30));
+    set(t, ColorRole::Text, RGB(212, 212, 212));
+    set(t, ColorRole::Muted, RGB(157, 157, 157));
+    set(t, ColorRole::Heading, RGB(212, 212, 212));
+    set(t, ColorRole::Link, RGB(55, 148, 255));
+    set(t, ColorRole::CodeText, RGB(212, 212, 212));
+    set(t, ColorRole::CodeBg, RGB(22, 22, 22));
+    set(t, ColorRole::QuoteText, RGB(212, 212, 212));
+    set(t, ColorRole::QuoteBar, RGB(15, 76, 117));
+    set(t, ColorRole::Rule, RGB(70, 70, 70));
+    set(t, ColorRole::TableBorder, RGB(70, 70, 70));
+    set(t, ColorRole::TableHeaderBg, RGB(30, 30, 30));
+    set(t, ColorRole::MarkBg, RGB(255, 255, 0));
+    set(t, ColorRole::MarkText, RGB(0, 0, 0));
+    set(t, ColorRole::InlineCodeBg, RGB(52, 52, 52));
+    set(t, ColorRole::Checkbox, RGB(157, 157, 157));
 
-    set(t, ColorRole::CodeKeyword, RGB(255, 123, 114));
-    set(t, ColorRole::CodeType, RGB(255, 166, 87));
-    set(t, ColorRole::CodeString, RGB(165, 214, 255));
-    set(t, ColorRole::CodeNumber, RGB(121, 192, 255));
-    set(t, ColorRole::CodeComment, RGB(139, 148, 158));
-    set(t, ColorRole::CodeDirective, RGB(210, 168, 255));
-    set(t, ColorRole::CodeTag, RGB(126, 231, 135));
-    set(t, ColorRole::CodeAttribute, RGB(121, 192, 255));
-    set(t, ColorRole::CodeFunction, RGB(210, 168, 255));
+    set(t, ColorRole::CodeKeyword, RGB(86, 156, 214));
+    set(t, ColorRole::CodeType, RGB(78, 201, 176));
+    set(t, ColorRole::CodeString, RGB(206, 145, 120));
+    set(t, ColorRole::CodeNumber, RGB(181, 206, 168));
+    set(t, ColorRole::CodeComment, RGB(106, 153, 85));
+    set(t, ColorRole::CodeDirective, RGB(197, 134, 192));
+    set(t, ColorRole::CodeTag, RGB(86, 156, 214));
+    set(t, ColorRole::CodeAttribute, RGB(156, 220, 254));
+    set(t, ColorRole::CodeFunction, RGB(220, 220, 170));
 
-    t.selection = RGB(31, 75, 127);
-    t.searchHighlight = RGB(84, 72, 30);
-    t.searchCurrent = RGB(158, 118, 30);
+    t.selection = RGB(38, 79, 120);
+    t.searchHighlight = RGB(97, 50, 20);
+    t.searchCurrent = RGB(81, 92, 106);
 
     t.barBackground = RGB(32, 32, 32);
     t.barBorder = RGB(58, 58, 58);
