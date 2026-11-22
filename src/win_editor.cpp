@@ -45,6 +45,7 @@ enum ControlId {
     kFindNextId,
     kReplaceOneId,
     kReplaceAllId,
+    kScrollBarId,
 };
 
 // Coalesces re-highlighting while the user types.
@@ -582,11 +583,13 @@ void EditorPane::createChildren(HINSTANCE instance) {
     (void)richEditLibrary;
 
     edit_ = CreateWindowExW(0, MSFTEDIT_CLASS, L"",
-                            WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE |
-                                ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_NOHIDESEL |
-                                ES_NOOLEDRAGDROP,
+                            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
+                                ES_AUTOHSCROLL | ES_NOHIDESEL | ES_NOOLEDRAGDROP,
                             0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(kEditId), instance,
                             nullptr);
+    scroll_ = CreateWindowExW(0, L"SCROLLBAR", nullptr, WS_CHILD | WS_VISIBLE | SBS_VERT, 0, 0,
+                              10, 10, hwnd_, reinterpret_cast<HMENU>(kScrollBarId), instance,
+                              nullptr);
     SendMessageW(edit_, EM_SETTEXTMODE, TM_PLAINTEXT | TM_MULTILEVELUNDO | TM_MULTICODEPAGE, 0);
     SendMessageW(edit_, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_SELCHANGE);
     // A target line width of 1 is RichEdit's documented "word wrap off" switch;
@@ -743,6 +746,7 @@ void EditorPane::setTheme(const Theme& theme) {
     applyEditorFormat();
     applyHighlighting();
     if (edit_) applyWindowTheme(edit_, theme_.dark);
+    if (scroll_) applyWindowTheme(scroll_, theme_.dark);
     if (hwnd_) InvalidateRect(hwnd_, nullptr, TRUE);
     if (findField_) InvalidateRect(findField_, nullptr, TRUE);
     if (replaceField_) InvalidateRect(replaceField_, nullptr, TRUE);
@@ -760,6 +764,11 @@ void EditorPane::setDpi(int dpi) {
 int EditorPane::gutterWidth() const {
     if (!showLineNumbers_) return 0;
     return scale(8) * 2 + gutterDigits_ * gutterCharWidth_;
+}
+
+RECT EditorPane::gutterRect() const {
+    RECT content = contentRect();
+    return RECT{pageLeft_, content.top, pageLeft_ + gutterWidth(), content.bottom};
 }
 
 RECT EditorPane::contentRect() const {
@@ -837,25 +846,127 @@ void EditorPane::layoutChildren() {
     }
 
     RECT content = contentRect();
-    int gutter = gutterWidth();
-    int editWidth = static_cast<int>(content.right - content.left) - gutter;
-    int editHeight = static_cast<int>(content.bottom - content.top);
-    MoveWindow(edit_, content.left + gutter, content.top, std::max(scale(60), editWidth),
-               std::max(0, editHeight), TRUE);
+    const int gutter = gutterWidth();
+    const int scrollWidth = GetSystemMetricsForDpi(SM_CXVSCROLL, static_cast<UINT>(dpi_));
+    const int editHeight = std::max(0, static_cast<int>(content.bottom - content.top));
+    const int available =
+        std::max(0, static_cast<int>(content.right - content.left) - scrollWidth);
+    const int pagePad = MulDiv(scale(kPagePadding), zoomPercent_, 100);
+    const int cap = pageLayout_.textWidth();
+    maxTextWidth_ = cap > 0 ? MulDiv(scale(cap), zoomPercent_, 100) : 0;
+    availableWidth_ = available;
+
+    // A pane wide enough for a full page centres it on the canvas. A narrower
+    // pane (or Full Width mode) is all page, with any cap centred inside it.
+    if (maxTextWidth_ > 0 && available >= gutter + maxTextWidth_ + pagePad * 2) {
+        textPad_ = pagePad;
+        pageWidth_ = gutter + maxTextWidth_ + pagePad * 2;
+        pageLeft_ = (available - pageWidth_) / 2;
+    } else {
+        pageLeft_ = 0;
+        pageWidth_ = available;
+        textPad_ = maxTextWidth_ > 0
+                       ? std::max(scale(20), (available - gutter - maxTextWidth_) / 2)
+                       : scale(20);
+    }
+
+    int editLeft = static_cast<int>(content.left) + pageLeft_ + gutter;
+    MoveWindow(edit_, editLeft, content.top, std::max(scale(60), pageWidth_ - gutter),
+               editHeight, TRUE);
+    MoveWindow(scroll_, static_cast<int>(content.right) - scrollWidth, content.top, scrollWidth,
+               editHeight, TRUE);
     applyEditorInsets();
+    syncScrollBar();
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+int EditorPane::pageEdgeAt(POINT p) const {
+    if (!pageLayout_.adjustable() || pageLeft_ <= 0) return 0;
+    RECT content = contentRect();
+    if (p.y < content.top || p.y >= content.bottom) return 0;
+    const int zone = pageEdgeGrabZone(dpi_);
+    const int right = pageLeft_ + pageWidth_;
+    if (p.x >= pageLeft_ - zone && p.x <= pageLeft_ + zone) return -1;
+    if (p.x >= right - zone && p.x <= right + zone) return 1;
+    return 0;
+}
+
+void EditorPane::setPageLayout(const PageLayout& layout) {
+    pageLayout_ = layout;
+    if (hwnd_) layoutChildren();
+}
+
+int EditorPane::textLineHeight() const {
+    // Measure two consecutive display lines; fall back to the nominal font
+    // height for a one-line buffer.
+    if (edit_ && SendMessageW(edit_, EM_GETLINECOUNT, 0, 0) >= 2) {
+        LONG first = static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, 0, 0));
+        LONG second = static_cast<LONG>(SendMessageW(edit_, EM_LINEINDEX, 1, 0));
+        POINTL a = {}, b = {};
+        SendMessageW(edit_, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&a), first);
+        SendMessageW(edit_, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&b), second);
+        if (b.y > a.y) return b.y - a.y;
+    }
+    return std::max(1, MulDiv(scale(19), zoomPercent_, 100));
+}
+
+int EditorPane::visibleLineCount() const {
+    RECT rect = {};
+    SendMessageW(edit_, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&rect));
+    return std::max(1, static_cast<int>(rect.bottom - rect.top) / textLineHeight());
+}
+
+void EditorPane::syncScrollBar() {
+    if (!scroll_ || !edit_) return;
+    SCROLLINFO si = {sizeof(si)};
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+    si.nMin = 0;
+    si.nMax = std::max(0, static_cast<int>(SendMessageW(edit_, EM_GETLINECOUNT, 0, 0)) - 1);
+    si.nPage = static_cast<UINT>(visibleLineCount());
+    si.nPos = static_cast<int>(SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+    SetScrollInfo(scroll_, SB_CTL, &si, TRUE);
+}
+
+void EditorPane::onScrollBar(int code) {
+    SCROLLINFO si = {sizeof(si)};
+    si.fMask = SIF_ALL;
+    GetScrollInfo(scroll_, SB_CTL, &si);
+    int target = si.nPos;
+    switch (code) {
+        case SB_LINEUP: target -= 1; break;
+        case SB_LINEDOWN: target += 1; break;
+        case SB_PAGEUP: target -= static_cast<int>(si.nPage); break;
+        case SB_PAGEDOWN: target += static_cast<int>(si.nPage); break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: target = si.nTrackPos; break;
+        case SB_TOP: target = 0; break;
+        case SB_BOTTOM: target = si.nMax; break;
+        default: return;
+    }
+    int maxFirst = std::max(0, si.nMax - static_cast<int>(si.nPage) + 1);
+    target = std::max(0, std::min(target, maxFirst));
+    scrollLines(target - static_cast<int>(SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0)));
+}
+
+void EditorPane::scrollLines(int delta) {
+    if (delta == 0) return;
+    SendMessageW(edit_, EM_LINESCROLL, 0, delta);
+    refreshChrome();
 }
 
 void EditorPane::applyEditorInsets() {
     if (!edit_) return;
     RECT rect = {};
     GetClientRect(edit_, &rect);
-    // The reading view pads its content by 20 logical pixels; mirror that.
-    const int pad = scale(20);
+    // Text sits textPad_ in from the page edges, 20 logical pixels from the top.
+    const int pad = textPad_ > 0 ? textPad_ : scale(20);
     rect.left += pad;
-    rect.top += pad;
+    rect.top += scale(20);
     rect.right = std::max(static_cast<int>(rect.left) + scale(40),
                           static_cast<int>(rect.right) - pad);
+    if (maxTextWidth_ > 0 && rect.right - rect.left > maxTextWidth_) {
+        rect.right = rect.left + maxTextWidth_;
+    }
     SendMessageW(edit_, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&rect));
 }
 
@@ -971,6 +1082,24 @@ void EditorPane::setContent(const std::wstring& text, const std::wstring& path) 
     SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);
     setSelection(0, 0);
     SendMessageW(edit_, EM_SETZOOM, zoomPercent_, 100);
+    applyHighlighting();
+    onEditChanged();
+}
+
+void EditorPane::reloadContent(const std::wstring& text) {
+    Sel sel = selection();
+    LONG firstLine = static_cast<LONG>(SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+
+    SetWindowTextW(edit_, text.c_str());
+    SendMessageW(edit_, EM_SETMODIFY, FALSE, 0);
+    SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);
+    SendMessageW(edit_, EM_SETZOOM, zoomPercent_, 100);
+
+    LONG length = GetWindowTextLengthW(edit_);
+    setSelection(std::min(sel.start, length), std::min(sel.end, length));
+    LONG nowFirst = static_cast<LONG>(SendMessageW(edit_, EM_GETFIRSTVISIBLELINE, 0, 0));
+    SendMessageW(edit_, EM_LINESCROLL, 0, firstLine - nowFirst);
+
     applyHighlighting();
     onEditChanged();
 }
@@ -1501,10 +1630,14 @@ void EditorPane::refreshChrome() {
     RECT client = {};
     GetClientRect(hwnd_, &client);
     RECT content = contentRect();
-    RECT gutter = {0, content.top, gutterWidth(), content.bottom};
+    RECT gutter = gutterRect();
     RECT status = {0, content.bottom, client.right, client.bottom};
     InvalidateRect(hwnd_, &gutter, FALSE);
     InvalidateRect(hwnd_, &status, FALSE);
+    syncScrollBar();
+    // Paint now rather than when the queue drains: the line numbers must move
+    // in the same step as the text, not after scrolling settles.
+    UpdateWindow(hwnd_);
 }
 
 // ------------------------------------------------------------ painting
@@ -1563,13 +1696,16 @@ void EditorPane::paintFindBar(HDC dc, const RECT& client) {
 }
 
 void EditorPane::paintGutter(HDC dc, const RECT& client) {
-    (void)client;
-    if (!showLineNumbers_) return;
     SourcePalette pal = sourcePalette(theme_.dark);
     RECT content = contentRect();
-    RECT gutter = {0, content.top, gutterWidth(), content.bottom};
-    // VS Code style: the gutter shares the editor background, no divider.
-    fillRect(dc, gutter, pal.background);
+    // Canvas around the page; the page itself takes the editor background.
+    RECT canvas = {0, content.top, client.right, content.bottom};
+    RECT page = {pageLeft_, content.top, pageLeft_ + pageWidth_, content.bottom};
+    fillRect(dc, canvas, theme_.canvas);
+    fillRect(dc, page, pal.background);
+    if (pageLeft_ > 0) paintPageEdges(dc, page, page, theme_, dpi_, pageLayout_.adjustable());
+    if (!showLineNumbers_) return;
+    RECT gutter = gutterRect();
 
     if (!edit_) return;
     SetBkMode(dc, TRANSPARENT);
@@ -1598,6 +1734,15 @@ void EditorPane::paintGutter(HDC dc, const RECT& client) {
         previousY = y;
         if (y >= content.bottom) break;
         if (y + scale(20) < content.top) continue;
+        // The empty line after the final newline gets no number. RichEdit
+        // reports that line as part of the previous one (EM_LINELENGTH sees
+        // the previous line), so test whether it starts at the end of the text.
+        if (line == count - 1 && line > 0) {
+            GETTEXTLENGTHEX query = {GTL_NUMCHARS | GTL_PRECISE, 1200};
+            LONG length = static_cast<LONG>(
+                SendMessageW(edit_, EM_GETTEXTLENGTHEX, reinterpret_cast<WPARAM>(&query), 0));
+            if (charIndex >= length) break;
+        }
 
         wchar_t buffer[16] = {0};
         int length = swprintf(buffer, ARRAYSIZE(buffer), L"%ld", line + 1);
@@ -1734,6 +1879,20 @@ LRESULT EditorPane::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSEMOVE: {
             POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (resizeSide_ != 0) {
+                // The page stays centred, so each edge moves by half the
+                // change in width.
+                const int pagePad = MulDiv(scale(kPagePadding), zoomPercent_, 100);
+                const int minimum = MulDiv(scale(kMinPageWidth), zoomPercent_, 100);
+                int widest = std::max(minimum, availableWidth_ - gutterWidth() - pagePad * 2);
+                int width = resizeStartWidth_ + 2 * resizeSide_ * (p.x - resizeStartX_);
+                width = std::max(minimum, std::min(width, widest));
+                int logical = MulDiv(MulDiv(width, 100, zoomPercent_), 96, dpi_);
+                if (onPageWidthDragged_ && logical != pageLayout_.adjustableWidth) {
+                    onPageWidthDragged_(logical);
+                }
+                return 0;
+            }
             int hit = hitTestButton(p);
             if (hit != hotButton_) {
                 hotButton_ = hit;
@@ -1757,6 +1916,13 @@ LRESULT EditorPane::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
         case WM_LBUTTONDOWN: {
             POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (int side = pageEdgeAt(p)) {
+                resizeSide_ = side;
+                resizeStartX_ = p.x;
+                resizeStartWidth_ = maxTextWidth_;
+                SetCapture(hwnd_);
+                return 0;
+            }
             int hit = hitTestButton(p);
             if (hit >= 0) {
                 pressedButton_ = hit;
@@ -1767,6 +1933,11 @@ LRESULT EditorPane::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_LBUTTONUP: {
+            if (resizeSide_ != 0) {
+                resizeSide_ = 0;
+                ReleaseCapture();
+                return 0;
+            }
             if (pressedButton_ >= 0) {
                 ReleaseCapture();
                 POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -1785,6 +1956,10 @@ LRESULT EditorPane::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             ScreenToClient(hwnd_, &p);
             if (hitTestButton(p) >= 0) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+            if (resizeSide_ != 0 || pageEdgeAt(p) != 0) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
             }
             break;
@@ -1866,6 +2041,13 @@ LRESULT EditorPane::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             SetFocus(edit_);
             return 0;
 
+        case WM_VSCROLL:
+            if (reinterpret_cast<HWND>(lParam) == scroll_) {
+                onScrollBar(LOWORD(wParam));
+                return 0;
+            }
+            break;
+
         default:
             break;
     }
@@ -1895,12 +2077,25 @@ LRESULT CALLBACK EditorPane::editProc(HWND hwnd, UINT message, WPARAM wParam, LP
             }
             break;
 
-        case WM_MOUSEWHEEL:
+        case WM_MOUSEWHEEL: {
             if (GetKeyState(VK_CONTROL) < 0) {
                 self->adjustZoom(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 10 : -10);
                 return 0;
             }
-            break;
+            // Scroll here instead of letting RichEdit animate it: its smooth
+            // scrolling moves the text over several frames without telling
+            // anyone, which left the line numbers behind.
+            UINT lines = 3;
+            SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+            if (lines == WHEEL_PAGESCROLL) lines = static_cast<UINT>(self->visibleLineCount());
+            if (lines == 0) return 0;
+            const int perLine = std::max(1, WHEEL_DELTA / static_cast<int>(lines));
+            self->wheelRemainder_ += GET_WHEEL_DELTA_WPARAM(wParam);
+            int steps = self->wheelRemainder_ / perLine;
+            self->wheelRemainder_ -= steps * perLine;
+            self->scrollLines(-steps);
+            return 0;
+        }
 
         case WM_DROPFILES:
             // Hand file drops to the frame so they run through the usual
@@ -1926,7 +2121,7 @@ LRESULT CALLBACK EditorPane::editProc(HWND hwnd, UINT message, WPARAM wParam, LP
         case WM_CHAR:
         case WM_VSCROLL:
         case WM_HSCROLL:
-        case WM_MOUSEWHEEL:
+        case WM_TIMER: // auto-scroll while drag-selecting past an edge
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:
         case WM_MOUSEMOVE:

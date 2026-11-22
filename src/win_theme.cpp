@@ -1,5 +1,6 @@
 #include "win_theme.h"
 
+#include <algorithm>
 #include <dwmapi.h>
 #include <uxtheme.h>
 
@@ -17,7 +18,39 @@ enum PreferredAppMode { AppModeDefault = 0, AppModeAllowDark = 1, AppModeForceDa
 using SetPreferredAppModeFn = PreferredAppMode(WINAPI*)(PreferredAppMode);
 using FlushMenuThemesFn = void(WINAPI*)();
 
+void fillSolid(HDC dc, const RECT& rect, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    FillRect(dc, &rect, brush);
+    DeleteObject(brush);
+}
+
 } // namespace
+
+void paintPageEdges(HDC dc, const RECT& page, const RECT& visible, const Theme& theme, int dpi,
+                    bool handles) {
+    const int edge = std::max(1, MulDiv(1, dpi, 96));
+    RECT left = {page.left - edge, page.top, page.left, page.bottom};
+    RECT right = {page.right, page.top, page.right + edge, page.bottom};
+    fillSolid(dc, left, theme.pageBorder);
+    fillSolid(dc, right, theme.pageBorder);
+    if (!handles) return;
+
+    // A short pill straddling each edge, centred in the visible height.
+    const int gripWidth = std::max(3, MulDiv(4, dpi, 96));
+    const int gripHeight = MulDiv(40, dpi, 96);
+    const int middle = (visible.top + visible.bottom) / 2;
+    HBRUSH brush = CreateSolidBrush(theme.pageHandle);
+    HGDIOBJ previousBrush = SelectObject(dc, brush);
+    HGDIOBJ previousPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    for (int x : {static_cast<int>(page.left) - edge / 2,
+                  static_cast<int>(page.right) + edge / 2}) {
+        RoundRect(dc, x - gripWidth / 2, middle - gripHeight / 2, x - gripWidth / 2 + gripWidth,
+                  middle + gripHeight / 2, gripWidth, gripWidth);
+    }
+    SelectObject(dc, previousPen);
+    SelectObject(dc, previousBrush);
+    DeleteObject(brush);
+}
 
 Theme makeTheme(bool dark) {
     Theme t;
@@ -27,6 +60,9 @@ Theme makeTheme(bool dark) {
     // default Light+ / Dark+ themes (editor colours plus markdown.css).
     if (!dark) {
         t.background = RGB(255, 255, 255);
+        t.canvas = RGB(233, 233, 233);
+        t.pageBorder = RGB(214, 214, 214);
+        t.pageHandle = RGB(150, 150, 150);
         set(t, ColorRole::None, RGB(255, 255, 255));
         set(t, ColorRole::Text, RGB(0, 0, 0));
         set(t, ColorRole::Muted, RGB(110, 110, 110));
@@ -82,6 +118,9 @@ Theme makeTheme(bool dark) {
     }
 
     t.background = RGB(30, 30, 30);
+    t.canvas = RGB(21, 21, 21);
+    t.pageBorder = RGB(48, 48, 48);
+    t.pageHandle = RGB(110, 110, 110);
     set(t, ColorRole::None, RGB(30, 30, 30));
     set(t, ColorRole::Text, RGB(212, 212, 212));
     set(t, ColorRole::Muted, RGB(157, 157, 157));

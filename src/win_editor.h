@@ -34,6 +34,10 @@ public:
 
     // Replaces the buffer, resets undo history and the modified flag.
     void setContent(const std::wstring& text, const std::wstring& path);
+    // Replaces the buffer with a newer copy of the same file from disk. Keeps
+    // the path, the nag-on-exit choice, the caret and the scroll position as
+    // far as the new text allows. Undo history and the modified flag reset.
+    void reloadContent(const std::wstring& text);
     std::wstring content() const; // CRLF line ends
     const std::wstring& filePath() const { return path_; }
 
@@ -90,6 +94,14 @@ public:
     void setZoomPercent(int percent);
     int zoomPercent() const { return zoomPercent_; }
 
+    // Document width mode and adjustable width, shared with the reading view.
+    void setPageLayout(const PageLayout& layout);
+    // Fired while the user drags a page edge, with the new adjustable text
+    // width in logical pixels at 100% zoom.
+    void setOnPageWidthDragged(std::function<void(int)> callback) {
+        onPageWidthDragged_ = std::move(callback);
+    }
+
     // Fired whenever the modified flag may have flipped.
     void setOnModifiedChanged(std::function<void()> callback) {
         onModifiedChanged_ = std::move(callback);
@@ -130,6 +142,12 @@ private:
     int statusHeight() const { return scale(24); }
     int gutterWidth() const;
     RECT contentRect() const; // gutter + editor area
+    // The line-number strip, which sits just left of the (possibly centred)
+    // text column.
+    RECT gutterRect() const;
+    // -1 or +1 when the point is on the left or right edge of an adjustable
+    // page, 0 otherwise.
+    int pageEdgeAt(POINT p) const;
     int hitTestButton(POINT p) const;
 
     // Selection / text plumbing (RichEdit uses a single CR per line break).
@@ -162,6 +180,12 @@ private:
     void insertAtLineBoundary(const std::wstring& block);
 
     void onEditChanged();
+    // Scroll-bar plumbing, all in display lines (wrapped lines count).
+    int textLineHeight() const;
+    int visibleLineCount() const;
+    void syncScrollBar();
+    void onScrollBar(int code);
+    void scrollLines(int delta);
     void refreshChrome(); // gutter + status repaint
     void notifyModified();
 
@@ -179,6 +203,11 @@ private:
 
     HWND hwnd_ = nullptr;
     HWND edit_ = nullptr;
+    // The editor's own vertical scroll bar, at the pane's right edge. The
+    // RichEdit control has no scroll bars of its own: it is only as wide as
+    // the page, and all scrolling runs through this pane so the line numbers
+    // repaint in step with the text.
+    HWND scroll_ = nullptr;
     HWND tooltip_ = nullptr;
     HWND findField_ = nullptr;
     HWND replaceField_ = nullptr;
@@ -200,6 +229,23 @@ private:
     bool markdownMode_ = true;
     bool wordWrap_ = false;
     bool showLineNumbers_ = true;
+    // The page: gutter plus padded text, centred on the canvas in a wide pane.
+    int pageLeft_ = 0;
+    int pageWidth_ = 0;
+    // Space between the text and the page edges.
+    int textPad_ = 0;
+    // Cap on the text width inside the edit control; 0 means no cap.
+    int maxTextWidth_ = 0;
+    // Wheel movement not yet turned into whole lines (precision touchpads).
+    int wheelRemainder_ = 0;
+    // Width left of the scroll bar, which the page is centred in.
+    int availableWidth_ = 0;
+    PageLayout pageLayout_;
+    // A page-edge drag in progress: which edge, and where it started.
+    int resizeSide_ = 0;
+    int resizeStartX_ = 0;
+    int resizeStartWidth_ = 0;
+    std::function<void(int)> onPageWidthDragged_;
 
     HFONT gutterFont_ = nullptr;
     HFONT uiFont_ = nullptr;

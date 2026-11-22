@@ -91,6 +91,27 @@ TEST(Layout, NarrowerWidthWrapsMoreNotWider) {
     CHECK_TRUE(maxRight(narrow) <= 220);
 }
 
+TEST(Layout, MaxContentWidthCentresTheColumnInAWideViewport) {
+    static StubMeasurer measurer;
+    md::Document doc = md::parse("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii");
+    view::Metrics metrics = stubMetrics();
+    metrics.maxContentWidth = 200; // 20 characters per line
+    view::Layout l = view::buildLayout(doc, measurer, metrics, 1000, nullptr);
+    // The 200-wide column sits in the middle of the 1000-wide viewport.
+    CHECK_EQ(l.runs[0].x, 400);
+    CHECK_TRUE(maxRight(l) <= 600);
+    CHECK_EQ(distinctLines(l), 3);
+}
+
+TEST(Layout, MaxContentWidthDoesNotAffectANarrowViewport) {
+    static StubMeasurer measurer;
+    md::Document doc = md::parse("hello");
+    view::Metrics metrics = stubMetrics();
+    metrics.maxContentWidth = 500;
+    view::Layout l = view::buildLayout(doc, measurer, metrics, 400, nullptr);
+    CHECK_EQ(l.runs[0].x, 20);
+}
+
 TEST(Layout, VeryLongWordIsBrokenRatherThanOverflowing) {
     view::Layout l = lay("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 240);
     CHECK_TRUE(maxRight(l) <= 220);

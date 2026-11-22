@@ -13,6 +13,10 @@ struct WindowState {
     int editorZoomPercent = 100;
     bool editorWordWrap = false;
     bool editorLineNumbers = true;
+    // PageWidthMode as an int (0 full, 1 reading, 2 adjustable), and the
+    // adjustable text width in logical pixels.
+    int pageWidthMode = 1;
+    int adjustablePageWidth = 880;
     bool valid = false; // false when nothing usable was stored
 };
 

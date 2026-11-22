@@ -159,6 +159,12 @@ public:
         out_.measurer = &measurer;
         left_ = met_.padding;
         right_ = std::max(left_ + 40, viewportWidth - met_.padding);
+        if (met_.maxContentWidth > 0 && right_ - left_ > met_.maxContentWidth) {
+            left_ = (viewportWidth - met_.maxContentWidth) / 2;
+            right_ = left_ + met_.maxContentWidth;
+        }
+        out_.textLeft = left_;
+        out_.textRight = right_;
     }
 
     void build(const md::Document& doc) {

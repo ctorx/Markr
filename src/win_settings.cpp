@@ -59,6 +59,15 @@ WindowState loadWindowState() {
     if (readDword(key, L"EditorLineNumbers", &lineNumbers)) {
         state.editorLineNumbers = lineNumbers != 0;
     }
+    DWORD pageMode = 0;
+    if (readDword(key, L"PageWidthMode", &pageMode) && pageMode <= 2) {
+        state.pageWidthMode = static_cast<int>(pageMode);
+    }
+    DWORD pageWidth = 0;
+    if (readDword(key, L"AdjustablePageWidth", &pageWidth) && pageWidth >= 200 &&
+        pageWidth <= 10000) {
+        state.adjustablePageWidth = static_cast<int>(pageWidth);
+    }
     RegCloseKey(key);
 
     if (!haveAll) return state;
@@ -89,6 +98,8 @@ void saveWindowState(const WindowState& state) {
     writeDword(key, L"EditorZoomPercent", static_cast<DWORD>(state.editorZoomPercent));
     writeDword(key, L"EditorWordWrap", state.editorWordWrap ? 1 : 0);
     writeDword(key, L"EditorLineNumbers", state.editorLineNumbers ? 1 : 0);
+    writeDword(key, L"PageWidthMode", static_cast<DWORD>(state.pageWidthMode));
+    writeDword(key, L"AdjustablePageWidth", static_cast<DWORD>(state.adjustablePageWidth));
     RegCloseKey(key);
 }
 

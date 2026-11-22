@@ -13,6 +13,7 @@
 #include "win_text.h"
 #include "win_theme.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -40,6 +41,14 @@ public:
 
     void setTheme(const Theme& theme);
     void setDpi(int dpi);
+
+    // Document width mode and adjustable width, shared with the editor.
+    void setPageLayout(const PageLayout& layout);
+    // Fired while the user drags a page edge, with the new adjustable text
+    // width in logical pixels at 100% zoom.
+    void setOnPageWidthDragged(std::function<void(int)> callback) {
+        onPageWidthDragged_ = std::move(callback);
+    }
 
     // Reading zoom, as a percentage of the theme's base font sizes.
     int zoomPercent() const { return zoomPercent_; }
@@ -85,6 +94,12 @@ private:
     int contentDpi() const { return MulDiv(dpi_, zoomPercent_, 100); }
     void onPaint();
     void paintContent(HDC dc, const RECT& client);
+    // The page in client coordinates: the text column plus its padding,
+    // clipped to the client. Equal to the client when there is no canvas.
+    RECT pageRect() const;
+    // -1 or +1 when x is on the left or right page edge of an adjustable
+    // page, 0 otherwise.
+    int pageEdgeAt(int x) const;
     void updateScrollBar();
     void scrollBy(int delta);
     void scrollTo(int position);
@@ -132,6 +147,13 @@ private:
     std::wstring searchTerm_;
     std::vector<view::Match> matches_;
     int currentMatch_ = -1;
+
+    PageLayout pageLayout_;
+    // A page-edge drag in progress: which edge, and where it started.
+    int resizeSide_ = 0;
+    int resizeStartX_ = 0;
+    int resizeStartWidth_ = 0;
+    std::function<void(int)> onPageWidthDragged_;
 };
 
 class AppWindow {
@@ -154,6 +176,8 @@ private:
     void updateTitle();
     void refreshOutline();
     void persistWindowState();
+    // Pushes pageLayout_ to the view and the editor.
+    void applyPageLayout();
     void setEditMode(bool on);
     // Enables or disables the markdown-only features (outline, rendered view)
     // to match the type of the file the view holds.
@@ -166,6 +190,16 @@ private:
     bool saveEditorInternal();
     // False when the user cancels; saves or discards pending editor changes.
     bool confirmSaveDiscard();
+    // The open file changed on disk: reload it silently when there are no
+    // unsaved edits, otherwise ask (see promptForExternalChange).
+    void onFileChangedOnDisk();
+    // Asks whether to replace unsaved edits with the newer file on disk. Only
+    // asks while the window is in the foreground; otherwise it waits for the
+    // user to come back (WM_ACTIVATE).
+    void promptForExternalChange();
+    // Re-reads the open file into the view and, when it holds the same file,
+    // the editor.
+    void reloadFromDisk();
     // The search bar starts collapsed; the magnifier and Ctrl+F reveal it.
     void showSearch(bool show);
     int barHeight() const;
@@ -200,10 +234,16 @@ private:
     int startEditorZoom_ = 100;
     bool startWordWrap_ = false;
     bool startLineNumbers_ = true;
+    PageLayout pageLayout_;
     bool searchVisible_ = false;
     bool searchFailed_ = false;
     bool buttonHot_ = false;
     bool buttonPressed_ = false;
+    // The file changed on disk while the editor had unsaved edits, and the
+    // user has not been asked about it yet.
+    bool externalChangePending_ = false;
+    bool prompting_ = false;
+    bool inMenuLoop_ = false;
 };
 
 } // namespace app

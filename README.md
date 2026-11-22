@@ -27,8 +27,17 @@ the menu bar) switches to a plain-text editor and back.
   blank in-memory document in edit mode that you can save whenever (or never)
 - **Syntax highlighting** in fenced code blocks, for the languages listed below
 - **Drop a file on the window** to open it
-- **Reloads on change** — edit in another editor and the view follows, keeping
-  your scroll position (`F5` forces it)
+- **Reloads on change** — edit in another editor and Markr follows, keeping
+  your scroll position (`F5` forces it). With no unsaved edits it reloads
+  silently, in the view and the editor alike. With unsaved edits it asks
+  before replacing them, and only while Markr is the active window: a change
+  that arrives while you are elsewhere is raised when you switch back
+- **Page layout** — in a wide (e.g. maximised) window the text sits on a
+  centred page with generous margins, set off from a darker canvas the way
+  Word shows a page, in both the view and the editor. `View` picks the width:
+  **Full Width** (no page), **Reading Width** (a comfortable fixed measure),
+  or **Adjustable Width**, which puts grips on the page edges to drag it
+  wider or narrower. The choice and the dragged width are remembered
 - **Working links** — in-document `#anchors`, links to other Markdown files, and
   `Alt+Left` / the mouse back button to retrace
 - **Zoom** — `Ctrl`+scroll or `Ctrl`+`+`/`-`, remembered between runs

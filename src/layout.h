@@ -146,6 +146,9 @@ struct Layout {
     // onto the markdown tree, which is what copying markdown or HTML needs.
     std::map<const md::Node*, TextRange> nodeRanges;
     int width = 0;
+    // Horizontal extent of the text column (left and right padding excluded).
+    int textLeft = 0;
+    int textRight = 0;
     int contentHeight = 0;
     const IMeasurer* measurer = nullptr; // kept for hit testing
 };
@@ -166,6 +169,9 @@ struct IImageSource {
 
 struct Metrics {
     int padding = 20;        // required content padding on all four sides
+    // Widest the text column may grow, padding excluded; 0 means no limit. A
+    // wider viewport centres the column so lines stay a comfortable length.
+    int maxContentWidth = 0;
     int blockSpacing = 12;   // vertical gap between blocks
     int headingRuleGap = 8;      // heading text to the rule underneath it
     int headingRuleSpacing = 14; // rule to the next block, on top of blockSpacing

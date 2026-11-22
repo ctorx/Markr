@@ -42,6 +42,7 @@ enum Command {
     ID_VIEW_LINENUMBERS,
     ID_VIEW_SCROLLED,
     ID_VIEW_DOCUMENT_CHANGED,
+    ID_VIEW_FILE_CHANGED,
     ID_RELOAD,
     ID_NAV_BACK,
     ID_NAV_FORWARD,
@@ -50,6 +51,9 @@ enum Command {
     ID_ZOOM_RESET,
     ID_FORMAT_BOLD,
     ID_FORMAT_ITALIC,
+    ID_PAGE_FULL,
+    ID_PAGE_READING,
+    ID_PAGE_ADJUSTABLE,
 };
 
 // Commands on the document's own right-click menu. They stay local to the view:
@@ -61,6 +65,28 @@ enum SelectionMenuCommand {
 
 // Polls the open document for external edits.
 constexpr UINT_PTR kFileWatchTimer = 1;
+
+// The frame retries a deferred "file changed on disk" prompt on this timer
+// while a menu or a mouse drag is in progress.
+constexpr UINT_PTR kExternalChangeRetryTimer = 2;
+
+// Posted to the frame to show the "file changed on disk" prompt once it is
+// safe to do so (the window is in the foreground and not busy).
+constexpr UINT WM_APP_EXTERNAL_CHANGE = WM_APP + 1;
+
+// True when two buffers hold the same text, ignoring CR/LF differences: the
+// editor reports CRLF line ends while the file on disk may use bare LF.
+bool sameTextIgnoringCr(const std::wstring& a, const std::wstring& b) {
+    size_t i = 0, j = 0;
+    while (true) {
+        while (i < a.size() && a[i] == L'\r') ++i;
+        while (j < b.size() && b[j] == L'\r') ++j;
+        if (i == a.size() || j == b.size()) return i == a.size() && j == b.size();
+        if (a[i] != b[j]) return false;
+        ++i;
+        ++j;
+    }
+}
 
 // Markdown-only features (the outline panel and the rendered view) follow the
 // extension of the open file. Unlike isMarkdownPath below, .txt does not
@@ -327,7 +353,13 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_TIMER:
-            if (wParam == kFileWatchTimer && !path_.empty() && fileChangedOnDisk()) reload();
+            // The frame decides what a change means: it reloads silently when
+            // nothing is being edited and asks first when there are unsaved
+            // edits. Acknowledging the stamp here reports each change once.
+            if (wParam == kFileWatchTimer && !path_.empty() && fileChangedOnDisk()) {
+                rememberFileStamp();
+                notifyParent(ID_VIEW_FILE_CHANGED);
+            }
             return 0;
 
         case WM_DROPFILES: {
@@ -439,6 +471,13 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_LBUTTONDOWN: {
             SetFocus(hwnd_);
+            if (int side = pageEdgeAt(GET_X_LPARAM(lParam))) {
+                resizeSide_ = side;
+                resizeStartX_ = GET_X_LPARAM(lParam);
+                resizeStartWidth_ = layout_.textRight - layout_.textLeft;
+                SetCapture(hwnd_);
+                return 0;
+            }
             selectionAnchor_ = selectionFocus_ =
                 hitTest(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
             selecting_ = true;
@@ -453,6 +492,22 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_MOUSEMOVE: {
+            if (resizeSide_ != 0) {
+                // The page stays centred, so each edge moves by half the
+                // change in width.
+                RECT client = {};
+                GetClientRect(hwnd_, &client);
+                int widest = std::max(scale(kMinPageWidth),
+                                      static_cast<int>(client.right) - scale(kPagePadding) * 2);
+                int width = resizeStartWidth_ +
+                            2 * resizeSide_ * (GET_X_LPARAM(lParam) - resizeStartX_);
+                width = std::max(scale(kMinPageWidth), std::min(width, widest));
+                int logical = MulDiv(width, 96, contentDpi());
+                if (onPageWidthDragged_ && logical != pageLayout_.adjustableWidth) {
+                    onPageWidthDragged_(logical);
+                }
+                return 0;
+            }
             if (!selecting_) return 0;
             int y = GET_Y_LPARAM(lParam);
             if (y < 0) scrollBy(-fonts_.lineHeight(view::FontId::Body));
@@ -467,6 +522,11 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
         }
 
         case WM_LBUTTONUP: {
+            if (resizeSide_ != 0) {
+                resizeSide_ = 0;
+                ReleaseCapture();
+                return 0;
+            }
             if (selecting_) {
                 selecting_ = false;
                 ReleaseCapture();
@@ -510,7 +570,9 @@ LRESULT DocumentView::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             RECT client = {};
             GetClientRect(hwnd_, &client);
             if (PtInRect(&client, p)) {
-                if (view::linkAtPoint(layout_, p.x, p.y + scrollY_) >= 0) {
+                if (resizeSide_ != 0 || pageEdgeAt(p.x) != 0) {
+                    SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                } else if (view::linkAtPoint(layout_, p.x, p.y + scrollY_) >= 0) {
                     SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 } else {
                     SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
@@ -647,6 +709,36 @@ void DocumentView::setDocument(std::string utf8, const std::wstring& path) {
     notifyParent(ID_VIEW_DOCUMENT_CHANGED);
 }
 
+RECT DocumentView::pageRect() const {
+    RECT client = {};
+    GetClientRect(hwnd_, &client);
+    RECT page = client;
+    const int pagePad = scale(kPagePadding);
+    page.left = std::max(client.left, static_cast<LONG>(layout_.textLeft - pagePad));
+    page.right = std::min(client.right, static_cast<LONG>(layout_.textRight + pagePad));
+    if (page.right <= page.left) page = client;
+    return page;
+}
+
+int DocumentView::pageEdgeAt(int x) const {
+    if (!pageLayout_.adjustable()) return 0;
+    RECT client = {};
+    GetClientRect(hwnd_, &client);
+    RECT page = pageRect();
+    if (page.left <= client.left && page.right >= client.right) return 0; // no canvas
+    const int zone = pageEdgeGrabZone(dpi_);
+    if (x >= page.left - zone && x <= page.left + zone) return -1;
+    if (x >= page.right - zone && x <= page.right + zone) return 1;
+    return 0;
+}
+
+void DocumentView::setPageLayout(const PageLayout& layout) {
+    bool reflow = layout.textWidth() != pageLayout_.textWidth();
+    pageLayout_ = layout;
+    if (reflow) relayoutKeepingPosition();
+    else InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void DocumentView::activateLink(const std::wstring& url) {
     if (url.empty()) return;
 
@@ -763,6 +855,8 @@ void DocumentView::relayout() {
 
     view::Metrics metrics;
     metrics.padding = scale(20);
+    // Scales with zoom, so zooming keeps the same number of words per line.
+    metrics.maxContentWidth = pageLayout_.textWidth() > 0 ? scale(pageLayout_.textWidth()) : 0;
     metrics.blockSpacing = scale(12);
     metrics.headingRuleGap = scale(9);
     metrics.headingRuleSpacing = scale(16);
@@ -999,7 +1093,15 @@ void DocumentView::onPaint() {
 }
 
 void DocumentView::paintContent(HDC dc, const RECT& client) {
-    fillRect(dc, client, theme_.background);
+    // The page spans the text column plus its padding. In a window wider than
+    // that, the rest is canvas, and a thin edge line outlines the page.
+    RECT page = pageRect();
+    page.top = client.top;
+    page.bottom = client.bottom;
+    bool hasCanvas = page.left > client.left || page.right < client.right;
+    if (hasCanvas) fillRect(dc, client, theme_.canvas);
+    fillRect(dc, page, theme_.background);
+    if (hasCanvas) paintPageEdges(dc, page, client, theme_, dpi_, pageLayout_.adjustable());
 
     const int top = scrollY_;
     const int bottom = scrollY_ + (client.bottom - client.top);
@@ -1125,6 +1227,8 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     startEditorZoom_ = saved.editorZoomPercent;
     startWordWrap_ = saved.editorWordWrap;
     startLineNumbers_ = saved.editorLineNumbers;
+    pageLayout_.mode = static_cast<PageWidthMode>(saved.pageWidthMode);
+    pageLayout_.adjustableWidth = std::max(kMinPageWidth, saved.adjustablePageWidth);
 
     // The menus stay unattached: the window draws its own strip, because owning
     // the caption means owning everything the system would put beside it.
@@ -1152,6 +1256,10 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     viewMenu_ = CreatePopupMenu();
     AppendMenuW(viewMenu_, MF_STRING, ID_VIEW_WORDWRAP, L"&Word Wrap");
     AppendMenuW(viewMenu_, MF_STRING, ID_VIEW_LINENUMBERS, L"Line &Numbers");
+    AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(viewMenu_, MF_STRING, ID_PAGE_FULL, L"&Full Width");
+    AppendMenuW(viewMenu_, MF_STRING, ID_PAGE_READING, L"&Reading Width");
+    AppendMenuW(viewMenu_, MF_STRING, ID_PAGE_ADJUSTABLE, L"&Adjustable Width");
 
     aboutMenu_ = CreatePopupMenu();
     AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_PROJECT, L"&About Markr");
@@ -1219,7 +1327,14 @@ void AppWindow::persistWindowState() {
     state.editorZoomPercent = editor_.zoomPercent();
     state.editorWordWrap = editor_.wordWrap();
     state.editorLineNumbers = editor_.showLineNumbers();
+    state.pageWidthMode = static_cast<int>(pageLayout_.mode);
+    state.adjustablePageWidth = pageLayout_.adjustableWidth;
     saveWindowState(state);
+}
+
+void AppWindow::applyPageLayout() {
+    view_.setPageLayout(pageLayout_);
+    editor_.setPageLayout(pageLayout_);
 }
 
 void AppWindow::refreshOutline() {
@@ -1412,6 +1527,15 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             editor_.setShowLineNumbers(startLineNumbers_);
             editor_.setOnModifiedChanged([this]() { updateTitle(); });
 
+            // Dragging a page edge in either pane resizes the page in both.
+            auto onDragged = [this](int width) {
+                pageLayout_.adjustableWidth = width;
+                applyPageLayout();
+            };
+            view_.setOnPageWidthDragged(onDragged);
+            editor_.setOnPageWidthDragged(onDragged);
+            applyPageLayout();
+
             applyTheme();
             layoutChildren();
             DragAcceptFiles(hwnd_, TRUE);
@@ -1577,6 +1701,8 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             CheckMenuItem(viewMenu_, ID_VIEW_WORDWRAP,
                           MF_BYCOMMAND | (editor_.wordWrap() ? MF_CHECKED : MF_UNCHECKED));
             enable(viewMenu_, ID_VIEW_LINENUMBERS, editMode_);
+            CheckMenuRadioItem(viewMenu_, ID_PAGE_FULL, ID_PAGE_ADJUSTABLE,
+                               ID_PAGE_FULL + static_cast<UINT>(pageLayout_.mode), MF_BYCOMMAND);
             CheckMenuItem(viewMenu_, ID_VIEW_LINENUMBERS,
                           MF_BYCOMMAND |
                               (editor_.showLineNumbers() ? MF_CHECKED : MF_UNCHECKED));
@@ -1604,6 +1730,12 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 case ID_VIEW_WORDWRAP:
                     editor_.setWordWrap(!editor_.wordWrap());
+                    return 0;
+                case ID_PAGE_FULL:
+                case ID_PAGE_READING:
+                case ID_PAGE_ADJUSTABLE:
+                    pageLayout_.mode = static_cast<PageWidthMode>(id - ID_PAGE_FULL);
+                    applyPageLayout();
                     return 0;
                 case ID_VIEW_LINENUMBERS:
                     editor_.setShowLineNumbers(!editor_.showLineNumbers());
@@ -1679,6 +1811,9 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     refreshOutline();
                     updateTitle();
                     return 0;
+                case ID_VIEW_FILE_CHANGED:
+                    onFileChangedOnDisk();
+                    return 0;
                 case ID_RELOAD:
                     if (!editMode_) view_.reload();
                     return 0;
@@ -1741,6 +1876,35 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (editMode_) editor_.focusEditor();
             else SetFocus(view_.hwnd());
             return 0;
+
+        case WM_ACTIVATE:
+            // Coming back to the window is when a change that arrived while
+            // the user was elsewhere gets raised. Posted, so the prompt shows
+            // after activation has finished.
+            if (LOWORD(wParam) != WA_INACTIVE && externalChangePending_) {
+                PostMessageW(hwnd_, WM_APP_EXTERNAL_CHANGE, 0, 0);
+            }
+            break;
+
+        case WM_ENTERMENULOOP:
+            inMenuLoop_ = true;
+            break;
+
+        case WM_EXITMENULOOP:
+            inMenuLoop_ = false;
+            break;
+
+        case WM_APP_EXTERNAL_CHANGE:
+            promptForExternalChange();
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == kExternalChangeRetryTimer) {
+                KillTimer(hwnd_, kExternalChangeRetryTimer);
+                promptForExternalChange();
+                return 0;
+            }
+            break;
 
         case WM_CLOSE:
             if (editor_.nagOnExit() && !confirmSaveDiscard()) return 0;
@@ -1871,10 +2035,10 @@ void AppWindow::paintChrome(HDC dc) {
 
     chrome_.paint(dc, client);
 
-    // The gutter around the document box shares the document's background so the
-    // scrolling area reads as an inset box.
+    // The gutter around the document box is canvas, the same colour as the
+    // area beside the page in a wide window, so the page reads as a sheet.
     RECT below = {0, chromeTop + bar, client.right, client.bottom};
-    fillRect(dc, below, theme_.background);
+    fillRect(dc, below, theme_.canvas);
 
     if (searchVisible_) {
         RECT barRect = {0, chromeTop, client.right, chromeTop + bar};
@@ -2053,6 +2217,77 @@ bool AppWindow::saveEditorInternal() {
     }
     updateTitle();
     return true;
+}
+
+void AppWindow::onFileChangedOnDisk() {
+    const std::wstring& path = view_.filePath();
+    if (path.empty()) return;
+    if (editor_.filePath() == path && editor_.modified()) {
+        // Unsaved edits would be lost: ask, but only while the user is here.
+        externalChangePending_ = true;
+        PostMessageW(hwnd_, WM_APP_EXTERNAL_CHANGE, 0, 0);
+        return;
+    }
+    reloadFromDisk();
+}
+
+void AppWindow::promptForExternalChange() {
+    if (!externalChangePending_ || prompting_) return;
+
+    // A save or a discard since the change was noticed has settled it.
+    const std::wstring path = view_.filePath();
+    if (path.empty() || editor_.filePath() != path || !editor_.modified()) {
+        externalChangePending_ = false;
+        return;
+    }
+
+    // In the background: WM_ACTIVATE asks again when the user returns.
+    if (GetForegroundWindow() != hwnd_ || !IsWindowEnabled(hwnd_)) return;
+    // Busy with a menu or a mouse drag: try again shortly.
+    if (inMenuLoop_ || GetCapture() != nullptr) {
+        SetTimer(hwnd_, kExternalChangeRetryTimer, 500, nullptr);
+        return;
+    }
+
+    size_t slash = path.find_last_of(L"\\/");
+    std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    std::wstring message = name +
+                           L" has changed on disk.\n\n"
+                           L"Reload it? Your unsaved changes will be lost.";
+
+    // Cleared before the box so a further change while it is open re-arms it.
+    externalChangePending_ = false;
+    prompting_ = true;
+    int choice = MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_YESNO | MB_ICONQUESTION);
+    prompting_ = false;
+
+    if (choice == IDYES) {
+        externalChangePending_ = false;
+        reloadFromDisk();
+    } else if (externalChangePending_) {
+        // The file changed again while the box was open.
+        PostMessageW(hwnd_, WM_APP_EXTERNAL_CHANGE, 0, 0);
+    }
+}
+
+void AppWindow::reloadFromDisk() {
+    const std::wstring path = view_.filePath();
+    if (path.empty()) return;
+
+    if (editor_.filePath() == path) {
+        bool ok = false;
+        std::string utf8 = readDocumentFile(path, &ok);
+        if (!ok) return;
+        std::wstring text = view::toWide(utf8);
+        // Our own save also lands here; leave the editor (caret, undo
+        // history) alone when the disk already matches the buffer.
+        if (!sameTextIgnoringCr(text, editor_.content())) editor_.reloadContent(text);
+        else editor_.discardChanges();
+    }
+    // The view refreshes even when hidden behind the editor, so leaving edit
+    // mode shows the current file.
+    view_.reload();
+    updateTitle();
 }
 
 bool AppWindow::confirmSaveDiscard() {
