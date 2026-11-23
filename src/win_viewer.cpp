@@ -1365,7 +1365,9 @@ void AppWindow::onUpdateChecked(UpdateCheck* result) {
     std::unique_ptr<UpdateCheck> owned(result);
     updateBusy_ = false;
     const std::wstring current = view::toWide(currentVersion());
-    const std::wstring latest = view::toWide(result->release.tag);
+    // Show "1.1.0", not the tag's "v1.1.0", to match the current version.
+    std::wstring latest = view::toWide(result->release.tag);
+    if (!latest.empty() && (latest[0] == L'v' || latest[0] == L'V')) latest.erase(0, 1);
 
     switch (result->outcome) {
         case UpdateCheck::Outcome::Failed: {
