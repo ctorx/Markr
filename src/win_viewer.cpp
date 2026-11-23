@@ -19,7 +19,7 @@ namespace app {
 namespace {
 
 const wchar_t* const kAppTitle = L"Markr";
-const wchar_t* const kProjectUrl = L"https://github.com/ctorx/SimpleMarkDownViewer";
+const wchar_t* const kProjectUrl = L"https://github.com/ctorx/Markr";
 const wchar_t* const kViewClass = L"MarkrDocumentView";
 const wchar_t* const kFrameClass = L"MarkrFrameWindow";
 

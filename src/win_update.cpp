@@ -10,7 +10,7 @@ namespace app {
 namespace {
 
 const wchar_t* const kLatestReleaseUrl =
-    L"https://api.github.com/repos/ctorx/SimpleMarkDownViewer/releases/latest";
+    L"https://api.github.com/repos/ctorx/Markr/releases/latest";
 // GitHub's API rejects requests without a User-Agent.
 const wchar_t* const kUserAgent = L"Markr-Updater/" TEXT(MARKR_VERSION_TEXT);
 
