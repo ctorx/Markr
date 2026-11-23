@@ -21,6 +21,7 @@ $sources = @(
     'src\layout.cpp',
     'src\md_export.cpp',
     'src\search.cpp',
+    'src\update_check.cpp',
     'src\highlight.cpp'
 ) | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ }
 $sources += (Get-ChildItem (Join-Path $root 'test') -Filter '*.cpp' | ForEach-Object { $_.FullName })

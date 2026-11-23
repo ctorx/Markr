@@ -1,5 +1,6 @@
 // Entry point. Keeps startup work to a minimum: no COM, no heavy initialisation
 // until a document actually needs it.
+#include "win_update.h"
 #include "win_viewer.h"
 
 #include <commctrl.h>
@@ -55,6 +56,7 @@ std::wstring firstCommandLineArgument() {
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand) {
     enablePerMonitorDpi();
     loadCodiconFont(instance);
+    app::cleanUpAfterUpdate();
 
     INITCOMMONCONTROLSEX controls = {sizeof(controls),
                                      ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};

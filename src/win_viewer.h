@@ -12,6 +12,7 @@
 #include "win_settings.h"
 #include "win_text.h"
 #include "win_theme.h"
+#include "win_update.h"
 
 #include <functional>
 #include <string>
@@ -178,6 +179,11 @@ private:
     void persistWindowState();
     // Pushes pageLayout_ to the view and the editor.
     void applyPageLayout();
+    // About -> Check for Updates: asks GitHub on a background thread, then
+    // offers to download, install and restart.
+    void checkForUpdates();
+    void onUpdateChecked(UpdateCheck* result);
+    void onUpdateDownloaded(std::wstring* path, std::wstring* error);
     void setEditMode(bool on);
     // Enables or disables the markdown-only features (outline, rendered view)
     // to match the type of the file the view holds.
@@ -244,6 +250,8 @@ private:
     bool externalChangePending_ = false;
     bool prompting_ = false;
     bool inMenuLoop_ = false;
+    // An update check or download is running on a background thread.
+    bool updateBusy_ = false;
 };
 
 } // namespace app

@@ -49,6 +49,8 @@ $sources = @(
     'src\layout.cpp',
     'src\md_export.cpp',
     'src\search.cpp',
+    'src\update_check.cpp',
+    'src\win_update.cpp',
     'src\highlight.cpp',
     'src\md_parser.cpp'
 ) | ForEach-Object { Join-Path $root $_ }
@@ -72,7 +74,7 @@ if ($DebugBuild) {
 $libs = @(
     'user32.lib', 'gdi32.lib', 'shell32.lib', 'comdlg32.lib', 'comctl32.lib',
     'shlwapi.lib', 'advapi32.lib', 'dwmapi.lib', 'uxtheme.lib', 'ole32.lib',
-    'windowscodecs.lib', 'msimg32.lib'
+    'windowscodecs.lib', 'msimg32.lib', 'winhttp.lib'
 )
 
 $link = @('/link', '/SUBSYSTEM:WINDOWS', '/MANIFEST:EMBED', '/MANIFESTUAC:NO',

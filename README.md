@@ -63,6 +63,10 @@ the menu bar) switches to a plain-text editor and back.
   lists and tables)
 - **Clickable links** — opens in the default browser
 - **High-DPI aware**, per-monitor v2
+- **Updates itself** — `About → Check for Updates` asks GitHub for the latest
+  release and, if it is newer, downloads it, swaps it in for the running
+  `Markr.exe` and restarts on the same document. It needs write access to the
+  folder `Markr.exe` lives in
 
 ### Markdown coverage
 
@@ -120,6 +124,18 @@ No other dependencies.
 The script locates the toolchain itself (`vswhere`, then well-known install
 paths), links the CRT statically and embeds the manifest, so the result is a
 single portable binary.
+
+## Releasing
+
+The version lives in `src\version.h`. To publish a release that running copies
+will pick up through **Check for Updates**:
+
+1. Bump `MARKR_VERSION_MAJOR` / `_MINOR` / `_PATCH` and `MARKR_VERSION_TEXT`.
+2. Commit and push.
+3. Run `.\scripts\release.ps1`. It builds (tests included), tags `v<version>`,
+   and creates a GitHub release with `Markr.exe` attached, using the GitHub CLI
+   (`gh`). `-DryRun` builds and checks without publishing; `-Notes "..."`
+   replaces the generated release notes.
 
 ## Testing
 

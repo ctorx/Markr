@@ -1,5 +1,7 @@
 #include "win_viewer.h"
 
+#include "win_update.h"
+
 #include <algorithm>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -9,6 +11,8 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <string>
+#include <thread>
+#include <memory>
 #include <windowsx.h>
 
 namespace app {
@@ -54,6 +58,7 @@ enum Command {
     ID_PAGE_FULL,
     ID_PAGE_READING,
     ID_PAGE_ADJUSTABLE,
+    ID_ABOUT_UPDATES,
 };
 
 // Commands on the document's own right-click menu. They stay local to the view:
@@ -73,6 +78,16 @@ constexpr UINT_PTR kExternalChangeRetryTimer = 2;
 // Posted to the frame to show the "file changed on disk" prompt once it is
 // safe to do so (the window is in the foreground and not busy).
 constexpr UINT WM_APP_EXTERNAL_CHANGE = WM_APP + 1;
+
+// Posted by the update threads. lParam owns a heap object the handler frees:
+// an UpdateCheck, or (for a download) a pair of path and error strings.
+constexpr UINT WM_APP_UPDATE_CHECKED = WM_APP + 2;
+constexpr UINT WM_APP_UPDATE_DOWNLOADED = WM_APP + 3;
+
+struct DownloadResult {
+    std::wstring path;
+    std::wstring error;
+};
 
 // True when two buffers hold the same text, ignoring CR/LF differences: the
 // editor reports CRLF line ends while the file on disk may use bare LF.
@@ -1262,6 +1277,8 @@ bool AppWindow::create(HINSTANCE instance, int showCommand, const std::wstring& 
     AppendMenuW(viewMenu_, MF_STRING, ID_PAGE_ADJUSTABLE, L"&Adjustable Width");
 
     aboutMenu_ = CreatePopupMenu();
+    AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_UPDATES, L"Check for &Updates...");
+    AppendMenuW(aboutMenu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(aboutMenu_, MF_STRING, ID_ABOUT_PROJECT, L"&About Markr");
 
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT, width = 1040, height = 780;
@@ -1330,6 +1347,101 @@ void AppWindow::persistWindowState() {
     state.pageWidthMode = static_cast<int>(pageLayout_.mode);
     state.adjustablePageWidth = pageLayout_.adjustableWidth;
     saveWindowState(state);
+}
+
+void AppWindow::checkForUpdates() {
+    if (updateBusy_) return;
+    updateBusy_ = true;
+    HWND target = hwnd_;
+    std::thread([target]() {
+        UpdateCheck* result = new UpdateCheck(app::checkForUpdate());
+        if (!PostMessageW(target, WM_APP_UPDATE_CHECKED, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result; // the window closed while we were asking
+        }
+    }).detach();
+}
+
+void AppWindow::onUpdateChecked(UpdateCheck* result) {
+    std::unique_ptr<UpdateCheck> owned(result);
+    updateBusy_ = false;
+    const std::wstring current = view::toWide(currentVersion());
+    const std::wstring latest = view::toWide(result->release.tag);
+
+    switch (result->outcome) {
+        case UpdateCheck::Outcome::Failed: {
+            std::wstring message = L"Markr couldn't check for updates.\n\n" + result->error;
+            MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_ICONWARNING | MB_OK);
+            return;
+        }
+        case UpdateCheck::Outcome::NoReleases:
+            MessageBoxW(hwnd_, L"No Markr releases have been published yet.", kAppTitle,
+                        MB_ICONINFORMATION | MB_OK);
+            return;
+        case UpdateCheck::Outcome::UpToDate: {
+            std::wstring message = L"You have the latest version of Markr (" + current + L").";
+            MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_ICONINFORMATION | MB_OK);
+            return;
+        }
+        case UpdateCheck::Outcome::Available:
+            break;
+    }
+
+    if (result->release.assetUrl.empty()) {
+        // A release without the program attached: offer the page instead.
+        std::wstring message = L"Markr " + latest + L" is available, but the release has no "
+                               L"Markr.exe to install.\n\nOpen the release page?";
+        if (MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_ICONINFORMATION | MB_YESNO) ==
+                IDYES &&
+            !result->release.pageUrl.empty()) {
+            ShellExecuteW(hwnd_, L"open", view::toWide(result->release.pageUrl).c_str(), nullptr,
+                          nullptr, SW_SHOWNORMAL);
+        }
+        return;
+    }
+
+    std::wstring message = L"Markr " + latest + L" is available. You have " + current +
+                           L".\n\nDownload and install it now? Markr will restart.";
+    if (MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_ICONQUESTION | MB_YESNO) != IDYES) {
+        return;
+    }
+
+    updateBusy_ = true;
+    HWND target = hwnd_;
+    std::string url = result->release.assetUrl;
+    std::thread([target, url]() {
+        DownloadResult* download = new DownloadResult();
+        download->path = app::downloadUpdate(url, &download->error);
+        if (!PostMessageW(target, WM_APP_UPDATE_DOWNLOADED, 0,
+                          reinterpret_cast<LPARAM>(download))) {
+            if (!download->path.empty()) DeleteFileW(download->path.c_str());
+            delete download;
+        }
+    }).detach();
+}
+
+void AppWindow::onUpdateDownloaded(std::wstring* path, std::wstring* error) {
+    updateBusy_ = false;
+    if (path->empty()) {
+        std::wstring message = L"Markr couldn't download the update.\n\n" + *error;
+        MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_ICONWARNING | MB_OK);
+        return;
+    }
+    // Settle unsaved edits before the restart; cancelling abandons the update.
+    if (!confirmSaveDiscard()) {
+        DeleteFileW(path->c_str());
+        return;
+    }
+    std::wstring installError;
+    if (!installUpdate(*path, &installError)) {
+        DeleteFileW(path->c_str());
+        std::wstring message = L"Markr couldn't install the update.\n\n" + installError;
+        MessageBoxW(hwnd_, message.c_str(), kAppTitle, MB_ICONWARNING | MB_OK);
+        return;
+    }
+    // Close first so this window's state is saved before the new one reads it.
+    std::wstring document = editMode_ ? editor_.filePath() : view_.filePath();
+    DestroyWindow(hwnd_);
+    relaunch(document);
 }
 
 void AppWindow::applyPageLayout() {
@@ -1697,6 +1809,7 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             enable(editMenu_, ID_FIND_REPLACE, editMode_);
             // Word wrap and line numbers are editor settings; the reading view
             // always wraps and has no gutter.
+            enable(aboutMenu_, ID_ABOUT_UPDATES, !updateBusy_);
             enable(viewMenu_, ID_VIEW_WORDWRAP, editMode_);
             CheckMenuItem(viewMenu_, ID_VIEW_WORDWRAP,
                           MF_BYCOMMAND | (editor_.wordWrap() ? MF_CHECKED : MF_UNCHECKED));
@@ -1778,6 +1891,9 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 case ID_FIND_REPLACE:
                     if (editMode_) editor_.showFindBar(true, true);
                     else showSearch(true);
+                    return 0;
+                case ID_ABOUT_UPDATES:
+                    checkForUpdates();
                     return 0;
                 case ID_ABOUT_PROJECT:
                     ShellExecuteW(hwnd_, L"open", kProjectUrl, nullptr, nullptr, SW_SHOWNORMAL);
@@ -1897,6 +2013,17 @@ LRESULT AppWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case WM_APP_EXTERNAL_CHANGE:
             promptForExternalChange();
             return 0;
+
+        case WM_APP_UPDATE_CHECKED:
+            onUpdateChecked(reinterpret_cast<UpdateCheck*>(lParam));
+            return 0;
+
+        case WM_APP_UPDATE_DOWNLOADED: {
+            DownloadResult* result = reinterpret_cast<DownloadResult*>(lParam);
+            onUpdateDownloaded(&result->path, &result->error);
+            delete result;
+            return 0;
+        }
 
         case WM_TIMER:
             if (wParam == kExternalChangeRetryTimer) {
